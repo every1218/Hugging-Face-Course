@@ -1,0 +1,170 @@
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+# 트랜스포머 아키텍처 (Transformer Architectures)[[transformer-architectures]]
+
+이전 섹션에서는 일반적인 트랜스포머 아키텍처를 소개하고 이러한 모델이 다양한 작업을 해결하는 방법을 탐구했습니다. 이제 세 가지 주요 **트랜스포머 모델의 아키텍처 변형**을 자세히 살펴보고 각각을 언제 사용해야 하는지 이해해 보겠습니다. 그런 다음, 이 아키텍처들이 다양한 언어 작업에 어떻게 적용되는지 살펴보겠습니다. 이 섹션에서는 세 가지 주요 트랜스포머 모델의 아키텍처 변형에 대해 더 깊이 알아보고 각각을 언제 사용해야 하는지 이해할 것입니다.
+
+> [!TIP]
+> 대부분의 트랜스포머 모델은 **인코더 전용(encoder-only), 디코더 전용(decoder-only),** 또는 **인코더-디코더(encoder-decoder, sequence-to-sequence)** 중 하나의 아키텍처를 사용한다는 것을 기억하십시오.
+이러한 차이점을 이해하면 특정 작업에 적합한 모델을 선택하는 데 도움이 될 것입니다.
+
+## 인코더 모델 (Encoder models)[[encoder-models]]
+
+<Youtube id="MUqNwgPjJvQ" />
+
+인코더 모델은 트랜스포머 모델의 인코더만 사용합니다. 각 단계에서 어텐션 레이어는 초기 문장의 모든 단어에 접근할 수 있습니다. 이러한 모델은 종종 "**양방향(bi-directional)**" 어텐션을 갖는 것으로 특징지어지며, 흔히 **오토인코딩 모델(*auto-encoding models*)**이라고 불립니다. 이 모델들의 사전 훈련은 일반적으로 주어진 문장에 어떤 식으로든 손상(예를 들어, 문장의 무작위 단어들을 마스킹(masking)하여)을 가하고, 모델에게 초기 문장을 찾거나 재구성하도록 하는 것을 중심으로 이루어집니다. 인코더 모델은 문장 분류, 개체명 인식(및 더 일반적으로 단어 분류), 추출형 질의응답과 같이 전체 문장에 대한 이해가 필요한 작업에 가장 적합합니다.
+
+> [!TIP]
+> [How 🤗 Transformers solve tasks](https://huggingface.co/learn/llm-course/chapter1/5)에서 보았듯이, **BERT**와 같은 인코더 모델은 **양방향의 전체 문맥**을 볼 수 있기 때문에 텍스트 이해에 탁월합니다. 이것은 전체 입력에 대한 이해가 중요한 작업에 완벽하게 만듭니다.
+
+이 계열의 대표적인 모델은 다음과 같습니다:
+
+- [BERT](https://huggingface.co/docs/transformers/model_doc/bert)
+- [DistilBERT](https://huggingface.co/docs/transformers/model_doc/distilbert)
+- [ModernBERT](https://huggingface.co/docs/transformers/en/model_doc/modernbert)
+
+## 디코더 모델 (Decoder models)[[decoder-models]]
+
+<Youtube id="d_ixlCubqQw" />
+
+디코더 모델은 트랜스포머 모델의 디코더만 사용합니다. 각 단계에서, 주어진 단어에 대해 어텐션 레이어는 문장에서 그 단어보다 **앞에 위치한 단어들**에만 접근할 수 있습니다. 이러한 모델은 종종 **오토회귀 모델(*auto-regressive models*)**이라고 불립니다.
+
+디코더 모델의 사전 훈련은 일반적으로 문장에서 다음 단어를 예측하는 것을 중심으로 이루어집니다. 이러한 모델은 **텍스트 생성**과 관련된 작업에 가장 적합합니다.
+
+> [!TIP]
+> **GPT**와 같은 디코더 모델은 한 번에 하나의 토큰을 예측하여 텍스트를 생성하도록 설계되었습니다. [How 🤗 Transformers solve tasks](https://huggingface.co/learn/llm-course/chapter1/5)에서 탐색했듯이, 이들은 이전 토큰만 볼 수 있으며, 이는 **창의적인 텍스트 생성**에는 탁월하지만 양방향 이해가 필요한 작업에는 덜 이상적입니다.
+
+이 계열의 대표적인 모델은 다음과 같습니다:
+
+- [Hugging Face SmolLM Series](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct)
+- [Meta's Llama Series](https://huggingface.co/docs/transformers/en/model_doc/llama4)
+- [Google's Gemma Series](https://huggingface.co/docs/transformers/main/en/model_doc/gemma3)
+- [DeepSeek's V3](https://huggingface.co/deepseek-ai/DeepSeek-V3)
+
+### 현대 대규모 언어 모델 (LLMs) (Modern Large Language Models (LLMs))
+
+대부분의 현대 대규모 언어 모델(LLMs)은 **디코더 전용** 아키텍처를 사용합니다. 이 모델들은 지난 몇 년 동안 크기와 기능 면에서 엄청나게 성장했으며, 일부 최대 모델은 수천억 개의 매개변수를 포함하고 있습니다. 현대 LLM은 일반적으로 두 단계로 훈련됩니다:
+1. **사전 훈련(Pretraining)**: 모델이 방대한 양의 텍스트 데이터에서 다음 토큰을 예측하는 방법을 학습합니다.
+2. **명령 튜닝(Instruction tuning)**: 모델이 지침을 따르고 유용한 응답을 생성하도록 **파인 튜닝(fine-tuned)**됩니다.
+
+이 접근 방식은 광범위한 주제와 작업에 걸쳐 인간과 유사한 텍스트를 이해하고 생성할 수 있는 모델로 이어졌습니다.
+
+#### 현대 LLM의 주요 기능 (Key capabilities of modern LLMs)
+
+현대 디코더 기반 LLM은 인상적인 기능을 입증했습니다:
+
+| 기능 (Capability) | 설명 (Description) | 예시 (Example) |
+|------------|-------------|---------|
+| 텍스트 생성 (Text generation) | 일관성 있고 문맥적으로 관련 있는 텍스트 생성 | 에세이, 이야기, 또는 이메일 작성 |
+| 요약 (Summarization) | 긴 문서를 더 짧은 버전으로 압축 | 보고서의 요약본 생성 |
+| 번역 (Translation) | 언어 간 텍스트 변환 | 영어를 스페인어로 번역 |
+| 질의응답 (Question answering) | 사실적 질문에 대한 답변 제공 | "프랑스의 수도는 무엇입니까?" |
+| 코드 생성 (Code generation) | 코드 스니펫 작성 또는 완성 | 설명에 기반한 함수 생성 |
+| 추론 (Reasoning) | 문제를 단계별로 해결 | 수학 문제나 논리 퍼즐 해결 |
+| Few-shot 학습 (Few-shot learning) | 프롬프트의 몇 가지 예시로부터 학습 | 단 2-3개의 예시를 보고 텍스트 분류 |
+
+Hub의 모델 저장소 페이지를 통해 브라우저에서 직접 디코더 기반 LLM을 실험해 볼 수 있습니다. 다음은 고전적인 [GPT-2](https://huggingface.co/openai-community/gpt2) (OpenAI의 최고의 오픈 소스 모델!)의 예시입니다:
+
+<iframe
+	src="https://huggingface.co/openai-community/gpt2"
+	frameborder="0"
+	width="100%"
+	height="450"
+></iframe>
+
+## 시퀀스-투-시퀀스 모델 (Sequence-to-sequence models)[[sequence-to-sequence-models]]
+
+<Youtube id="0_4KEb08xrE" />
+
+**인코더-디코더 모델** (또는 **시퀀스-투-시퀀스 모델(*sequence-to-sequence models*)**)은 트랜스포머 아키텍처의 두 부분을 모두 사용합니다. 각 단계에서 인코더의 어텐션 레이어는 초기 문장의 모든 단어에 접근할 수 있는 반면, 디코더의 어텐션 레이어는 입력에서 주어진 단어보다 **앞에 위치한 단어들**에만 접근할 수 있습니다. 이러한 모델의 사전 훈련은 다양한 형태를 취할 수 있지만, 종종 입력이 어떤 식으로든 손상된(예를 들어, 무작위 단어들을 마스킹하여) 문장을 재구성하는 것을 포함합니다. T5 모델의 사전 훈련은 무작위 텍스트 범위(여러 단어를 포함할 수 있음)를 단일 마스크 특수 토큰으로 대체하고, 그 다음 이 마스크 토큰이 대체하는 텍스트를 예측하는 작업으로 구성됩니다. 시퀀스-투-시퀀스 모델은 요약, 번역 또는 생성적 질의응답과 같이 주어진 입력에 따라 새로운 문장을 생성하는 작업을 중심으로 하는 데 가장 적합합니다.
+
+> [!TIP]
+> [How 🤗 Transformers solve tasks](https://huggingface.co/learn/llm-course/chapter1/5)에서 보았듯이, **BART** 및 **T5**와 같은 인코더-디코더 모델은 두 아키텍처의 강점을 결합합니다. 인코더는 입력에 대한 깊은 양방향 이해를 제공하는 반면, 디코더는 적절한 출력 텍스트를 생성합니다. 이는 번역 또는 요약과 같이 한 시퀀스를 다른 시퀀스로 변환하는 작업에 완벽하게 만듭니다.
+
+### 실제 적용 (Practical applications)
+
+시퀀스-투-시퀀스 모델은 의미를 보존하면서 한 형태의 텍스트를 다른 형태의 텍스트로 변환해야 하는 작업에 탁월합니다. 몇 가지 실제 적용 분야는 다음과 같습니다:
+
+| 적용 분야 (Application) | 설명 (Description) | 예시 모델 (Example Model) |
+|-------------|-------------|---------------|
+| 기계 번역 (Machine translation) | 언어 간 텍스트 변환 | Marian, T5 |
+| 텍스트 요약 (Text summarization) | 긴 텍스트의 간결한 요약 생성 | BART, T5 |
+| 데이터-투-텍스트 생성 (Data-to-text generation) | 구조화된 데이터를 자연어로 변환 | T5 |
+| 문법 교정 (Grammar correction) | 텍스트의 문법 오류 수정 | T5 |
+| 질의응답 (Question answering) | 문맥을 기반으로 답변 생성 | BART, T5 |
+
+다음은 번역을 위한 시퀀스-투-시퀀스 모델의 대화형 데모입니다:
+
+<iframe
+	src="https://course-demos-speech-to-speech-translation.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+이 계열의 대표적인 모델은 다음과 같습니다:
+
+- [BART](https://huggingface.co/docs/transformers/model_doc/bart)
+- [mBART](https://huggingface.co/docs/transformers/model_doc/mbart)
+- [Marian](https://huggingface.co/docs/transformers/model_doc/marian)
+- [T5](https://huggingface.co/docs/transformers/model_doc/t5)
+
+## 올바른 아키텍처 선택하기 (Choosing the right architecture)[[choosing-the-right-architecture]]
+
+특정 NLP 작업을 수행할 때 어떤 아키텍처를 사용해야 할지 어떻게 결정할까요? 다음은 빠른 안내입니다:
+
+| 작업 (Task) | 제안된 아키텍처 (Suggested Architecture) | 예시 (Examples) |
+|------|------------------------|----------|
+| 텍스트 분류 (감성, 주제) (Text classification (sentiment, topic)) | 인코더 (Encoder) | BERT, RoBERTa |
+| 텍스트 생성 (창의적 글쓰기) (Text generation (creative writing)) | 디코더 (Decoder) | GPT, LLaMA |
+| 번역 (Translation) | 인코더-디코더 (Encoder-Decoder) | T5, BART |
+| 요약 (Summarization) | 인코더-디코더 (Encoder-Decoder) | BART, T5 |
+| 개체명 인식 (Named entity recognition) | 인코더 (Encoder) | BERT, RoBERTa |
+| 질의응답 (추출형) (Question answering (extractive)) | 인코더 (Encoder) | BERT, RoBERTa |
+| 질의응답 (생성형) (Question answering (generative)) | 인코더-디코더 또는 디코더 (Encoder-Decoder or Decoder) | T5, GPT |
+| 대화형 AI (Conversational AI) | 디코더 (Decoder) | GPT, LLaMA |
+
+> [!TIP]
+> 어떤 모델을 사용해야 할지 확신이 서지 않을 때는 다음을 고려하십시오:
+>
+> 1. 귀하의 작업에 어떤 종류의 이해가 필요합니까? (양방향 또는 단방향)
+> 2. 새 텍스트를 생성하는 것입니까, 아니면 기존 텍스트를 분석하는 것입니까?
+> 3. 한 시퀀스를 다른 시퀀스로 변환해야 합니까?
+>
+> 이 질문들에 대한 답이 올바른 아키텍처로 안내할 것입니다.
+
+## LLM의 진화 (The evolution of LLMs)
+
+대규모 언어 모델은 최근 몇 년 동안 급속도로 발전했으며, 각 세대는 기능 면에서 상당한 개선을 가져왔습니다.
+
+## 어텐션 메커니즘 (Attention mechanisms)[[attention-mechanisms]]
+
+대부분의 트랜스포머 모델은 어텐션 행렬이 **정사각형**이라는 의미에서 **전체 어텐션(full attention)**을 사용합니다. 이는 긴 텍스트가 있을 때 큰 계산 병목 현상이 될 수 있습니다. Longformer와 Reformer는 더 효율적이고 훈련 속도를 높이기 위해 어텐션 행렬의 **희소(sparse) 버전**을 사용하려는 모델입니다.
+
+> [!TIP]
+> 표준 어텐션 메커니즘은 시퀀스 길이 $n$에 대해 $O(n^2)$의 계산 복잡도를 가집니다. 이는 매우 긴 시퀀스에서 문제가 됩니다. 아래의 특수화된 어텐션 메커니즘은 이러한 한계를 해결하는 데 도움이 됩니다.
+
+### LSH 어텐션 (LSH attention)
+
+[Reformer](https://huggingface.co/docs/transformers/model_doc/reformer)는 **LSH 어텐션(LSH attention)**을 사용합니다. $\text{softmax}(QK^t)$에서 행렬 $QK^t$의 가장 큰 요소들(softmax 차원에서)만이 유용한 기여를 할 것입니다. 따라서 $Q$의 각 쿼리 $q$에 대해 $q$와 가까운 $K$의 키 $k$만 고려할 수 있습니다. $q$와 $k$가 가까운지 여부를 결정하는 데 **해시 함수**가 사용됩니다. 어텐션 마스크는 현재 토큰을 마스킹하도록 수정됩니다 (첫 번째 위치를 제외하고). 왜냐하면 이는 동일한 (따라서 서로 매우 유사한) 쿼리와 키를 제공할 것이기 때문입니다. 해시가 다소 무작위적일 수 있으므로, 실제로는 여러 해시 함수가 사용되며 (매개변수 $\text{n\_rounds}$로 결정됨) 그 다음 평균됩니다.
+
+### 로컬 어텐션 (Local attention)
+
+[Longformer](https://huggingface.co/docs/transformers/model_doc/longformer)는 **로컬 어텐션(local attention)**을 사용합니다: 종종 (예를 들어, 왼쪽과 오른쪽의 두 토큰은 무엇인가와 같은) **로컬 문맥**만으로도 주어진 토큰에 대한 조치를 취하기에 충분합니다. 또한, 작은 **윈도우(window)**를 가진 어텐션 레이어를 쌓으면 마지막 레이어는 윈도우 내의 토큰뿐만 아니라 더 많은 **수용장(receptive field)**을 가지게 되어 전체 문장의 표현을 구축할 수 있습니다. 일부 사전 선택된 입력 토큰에는 **글로벌 어텐션(global attention)**도 부여됩니다: 이 몇몇 토큰에 대해서는 어텐션 행렬이 모든 토큰에 접근할 수 있으며, 이 프로세스는 대칭적입니다: 다른 모든 토큰은 (로컬 윈도우 내의 토큰 외에도) 이러한 특정 토큰에 접근할 수 있습니다. 이는 논문의 그림 2d에 나와 있으며, 아래에서 샘플 어텐션 마스크를 볼 수 있습니다:
+
+<div class="flex justify-center">
+    <img scale="50 %" align="center" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/local_attention_mask.png"/>
+</div>
+
+더 적은 매개변수를 가진 이러한 어텐션 행렬을 사용하면 모델이 더 큰 시퀀스 길이를 가진 입력을 가질 수 있습니다.
+
+### 축 방향 위치 인코딩 (Axial positional encodings)
+
+[Reformer](https://huggingface.co/docs/transformers/model_doc/reformer)는 **축 방향 위치 인코딩(axial positional encodings)**을 사용합니다: 전통적인 트랜스포머 모델에서 위치 인코딩 $E$는 크기가 $l \times d$인 행렬이며, $l$은 시퀀스 길이이고 $d$는 은닉 상태의 차원입니다. 텍스트가 매우 길면 이 행렬은 엄청나게 커서 GPU에서 너무 많은 공간을 차지할 수 있습니다. 이를 완화하기 위해 축 방향 위치 인코딩은 이 큰 행렬 $E$를 크기가 $l_1 \times d_1$과 $l_2 \times d_2$인 두 개의 더 작은 행렬 $E_1$과 $E_2$로 **인수분해(factorizing)**하여, $l_1 \times l_2 = l$이고 $d_1 + d_2 = d$가 되도록 합니다 (길이에 대한 곱셈으로 인해 훨씬 더 작아집니다). $E$에서 시간 단계 $j$에 대한 임베딩은 $E_1$의 시간 단계 $j \pmod{l_1}$에 대한 임베딩과 $E_2$의 $j // l_1$에 대한 임베딩을 **연결(concatenating)**하여 얻습니다.
+
+## 결론 (Conclusion)[[conclusion]]
+
+이 섹션에서는 세 가지 주요 트랜스포머 아키텍처와 일부 특수화된 어텐션 메커니즘을 탐구했습니다. 이러한 아키텍처 차이점을 이해하는 것은 특정 NLP 작업에 적합한 모델을 선택하는 데 중요합니다. 이 과정을 계속 진행하면서, 이러한 다양한 아키텍처에 대한 실습 경험을 얻고 특정 요구 사항에 맞게 미세 조정하는 방법을 배울 것입니다. 다음 섹션에서는 이러한 모델을 배포할 때 알아야 할 몇 가지 **한계와 편향(biases)**에 대해 살펴볼 것입니다.
