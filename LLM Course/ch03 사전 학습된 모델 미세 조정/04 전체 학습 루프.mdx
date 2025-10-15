@@ -1,0 +1,436 @@
+# 완전한 훈련 루프 (A full training loop)
+
+<Youtube id="Dh9CL8fyG80"/>
+
+이제 `Trainer` 클래스를 사용하지 않고, 최신 PyTorch 모범 사례를 사용하여 처음부터 훈련 루프를 구현함으로써 이전 섹션에서와 동일한 결과를 얻는 방법을 살펴보겠습니다. 다시 한 번, 섹션 2에서 데이터 처리를 완료했다고 가정합니다. 다음은 필요한 모든 것을 포함하는 간략한 요약입니다:
+
+<Tip>
+
+🏗️ **처음부터 훈련 (Training from Scratch)**: 이 섹션은 이전 콘텐츠를 기반으로 합니다. PyTorch 훈련 루프 및 모범 사례에 대한 포괄적인 지침은 [🤗 Transformers 훈련 문서](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch)와 [커스텀 훈련 쿡북](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model)을 확인하십시오.
+
+</Tip>
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### 훈련 준비 (Prepare for training)
+
+실제로 훈련 루프를 작성하기 전에, 몇 가지 객체를 정의해야 합니다. 첫 번째는 배치를 반복하는 데 사용할 **데이터로더**입니다. 그러나 이 데이터로더를 정의하기 전에, `Trainer`가 자동으로 처리해 준 일부 사항을 처리하기 위해 **`tokenized_datasets`**에 약간의 후처리(postprocessing)를 적용해야 합니다. 구체적으로 다음과 같이 해야 합니다:
+
+- 모델이 예상하지 않는 값에 해당하는 열(`sentence1` 및 `sentence2` 열과 같은)을 제거합니다.
+- **`label`** 열의 이름을 **`labels`**로 변경합니다(`labels`라는 인수가 모델이 예상하는 인수 이름이기 때문입니다).
+- 데이터셋의 형식을 설정하여 리스트 대신 PyTorch 텐서를 반환하도록 합니다.
+
+우리의 **`tokenized_datasets`**에는 이러한 각 단계에 대한 메서드가 있습니다:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+결과가 모델이 허용할 열만 포함하는지 확인할 수 있습니다:
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+이제 이것이 완료되었으므로, 데이터로더를 쉽게 정의할 수 있습니다:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+데이터 처리의 오류가 없는지 빠르게 확인하기 위해, 다음과 같이 배치를 검사할 수 있습니다:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+훈련 데이터로더에 **`shuffle=True`**를 설정했고 배치 내의 최대 길이로 패딩하고 있기 때문에, 실제 모양은 당신의 것과 약간 다를 수 있다는 점에 유의하십시오.
+
+이제 데이터 전처리를 완전히 마쳤으므로(모든 ML 실무자에게 만족스럽지만 달성하기 어려운 목표), 모델로 넘어갑시다. 이전 섹션에서와 똑같이 인스턴스화합니다:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+훈련 중에 모든 것이 순조롭게 진행되는지 확인하기 위해, 우리의 배치를 이 모델에 전달합니다:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+모든 🤗 Transformers 모델은 **`labels`**가 제공되면 손실을 반환하며, 로짓(우리 배치에서 각 입력에 대해 두 개, 즉 크기가 8 x 2인 텐서)도 얻습니다.
+
+이제 훈련 루프를 작성할 준비가 거의 다 되었습니다! 옵티마이저와 학습률 스케줄러라는 두 가지가 빠져 있습니다. `Trainer`가 하던 것을 직접 복제하려고 하므로, 동일한 기본값을 사용하겠습니다. `Trainer`가 사용하는 옵티마이저는 `AdamW`이며, 이는 Adam과 동일하지만 가중치 감소 정규화를 위한 트위스트가 있습니다(Ilya Loshchilov와 Frank Hutter의 ["Decoupled Weight Decay Regularization"](https://arxiv.org/abs/1711.05101) 참조):
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+<Tip>
+
+💡 **현대적인 최적화 팁 (Modern Optimization Tips)**: 훨씬 더 나은 성능을 위해 다음을 시도할 수 있습니다:
+- **가중치 감소를 사용한 AdamW (AdamW with weight decay)**: `AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)`
+- **8비트 Adam (8-bit Adam)**: 메모리 효율적인 최적화를 위해 `bitsandbytes`를 사용하십시오.
+- **다른 학습률 (Different learning rates)**: 낮은 학습률(1e-5 ~ 3e-5)은 종종 대규모 모델에 더 잘 작동합니다.
+
+🚀 **최적화 리소스 (Optimization Resources)**: [🤗 Transformers 최적화 가이드](https://huggingface.co/docs/transformers/main/en/performance#optimizer)에서 옵티마이저 및 훈련 전략에 대해 자세히 알아보십시오.
+
+</Tip>
+
+마지막으로, 기본적으로 사용되는 학습률 스케줄러는 최대값(5e-5)에서 0으로 선형적으로 감소하는 것입니다. 이를 제대로 정의하려면, 실행하려는 에폭 수에 훈련 배치 수(훈련 데이터로더의 길이)를 곱한 **훈련 단계 수**를 알아야 합니다. `Trainer`는 기본적으로 세 에폭을 사용하므로, 우리는 그것을 따를 것입니다:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### 훈련 루프 (The training loop)
+
+마지막으로 한 가지 더: GPU에 접근할 수 있다면 GPU를 사용하려고 합니다(CPU에서는 훈련이 몇 분 대신 몇 시간이 걸릴 수 있습니다). 이를 위해 모델과 배치를 배치할 **`device`**를 정의합니다:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+이제 훈련할 준비가 되었습니다! 훈련이 언제 끝날지 감을 잡기 위해, `tqdm` 라이브러리를 사용하여 훈련 단계 수에 대한 진행률 표시줄을 추가합니다:
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+<Tip>
+
+💡 **현대적인 훈련 최적화 (Modern Training Optimizations)**: 훈련 루프를 더욱 효율적으로 만들려면 다음을 고려하십시오:
+
+- **그레이디언트 클리핑 (Gradient Clipping)**: `optimizer.step()` 전에 `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)`를 추가하십시오.
+- **혼합 정밀도 (Mixed Precision)**: 더 빠른 훈련을 위해 `torch.cuda.amp.autocast()` 및 `GradScaler`를 사용하십시오.
+- **그레이디언트 누적 (Gradient Accumulation)**: 더 큰 배치 크기를 시뮬레이션하기 위해 여러 배치에 걸쳐 그레이디언트를 누적하십시오.
+- **체크포인트 (Checkpointing)**: 중단된 경우 훈련을 재개하기 위해 주기적으로 모델 체크포인트를 저장하십시오.
+
+🔧 **구현 가이드 (Implementation Guide)**: 이러한 최적화에 대한 자세한 예는 [🤗 Transformers 효율적인 훈련 가이드](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) 및 [다양한 옵티마이저](https://huggingface.co/docs/transformers/main/en/optimizers)를 참조하십시오.
+
+</Tip>
+
+훈련 루프의 핵심은 서론의 루프와 매우 유사하게 보인다는 것을 알 수 있습니다. 우리는 보고를 요청하지 않았으므로, 이 훈련 루프는 모델이 어떻게 진행되는지에 대해 아무것도 알려주지 않을 것입니다. 이를 위해 평가 루프를 추가해야 합니다.
+
+### 평가 루프 (The evaluation loop)
+
+이전에 했던 것처럼, 🤗 Evaluate 라이브러리에서 제공하는 메트릭을 사용할 것입니다. 우리는 이미 **`metric.compute()`** 메서드를 보았지만, 메트릭은 실제로 **`add_batch()`** 메서드를 사용하여 예측 루프를 진행하면서 배치를 누적할 수 있습니다. 모든 배치를 누적하면 **`metric.compute()`**로 최종 결과를 얻을 수 있습니다. 다음은 평가 루프에서 이 모든 것을 구현하는 방법입니다:
+
+<Tip>
+
+📊 **평가 모범 사례 (Evaluation Best Practices)**: 더 정교한 평가 전략 및 메트릭에 대해서는 [🤗 Evaluate 문서](https://huggingface.co/docs/evaluate/)와 [포괄적인 평가 쿡북](https://github.com/huggingface/evaluation-guidebook)을 살펴보십시오.
+
+</Tip>
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+다시 한 번, 모델 헤드 초기화의 무작위성과 데이터 셔플링으로 인해 결과가 약간 다를 수 있지만, 비슷한 범위에 있어야 합니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** 이전 훈련 루프를 수정하여 SST-2 데이터셋에서 모델을 미세 조정하십시오.
+
+</Tip>
+
+### 🤗 Accelerate로 훈련 루프 강화 (Supercharge your training loop with Accelerate)
+
+<Youtube id="s7dy8QRgjJ0" />
+
+우리가 이전에 정의한 훈련 루프는 단일 CPU 또는 GPU에서 잘 작동합니다. 그러나 [🤗 Accelerate](https://github.com/huggingface/accelerate) 라이브러리를 사용하면 몇 가지 조정만으로 여러 GPU 또는 TPU에서 분산 훈련을 활성화할 수 있습니다. 🤗 Accelerate는 분산 훈련, 혼합 정밀도, 장치 배치의 복잡성을 자동으로 처리합니다. 훈련 및 검증 데이터로더 생성부터 시작하여, 수동 훈련 루프는 다음과 같습니다:
+
+<Tip>
+
+⚡ **Accelerate 심층 분석 (Accelerate Deep Dive)**: [🤗 Accelerate 문서](https://huggingface.co/docs/accelerate/)에서 분산 훈련, 혼합 정밀도 및 하드웨어 최적화에 대한 모든 것을 배우고 [transformers 문서](https://huggingface.co/docs/transformers/main/en/accelerate)에서 실제 예제를 살펴보십시오.
+
+</Tip>
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+추가할 첫 번째 줄은 가져오기(import) 줄입니다. 두 번째 줄은 환경을 살펴보고 적절한 분산 설정을 초기화할 **`Accelerator`** 객체를 인스턴스화합니다. 🤗 Accelerate는 장치 배치를 처리하므로, 모델을 장치에 배치하는 줄을 제거할 수 있습니다(또는 원하는 경우 **`device`** 대신 **`accelerator.device`**를 사용하도록 변경할 수 있습니다).
+
+그런 다음 작업의 대부분은 데이터로더, 모델 및 옵티마이저를 **`accelerator.prepare()`**로 보내는 줄에서 수행됩니다. 이렇게 하면 분산 훈련이 의도한 대로 작동하도록 해당 객체가 적절한 컨테이너에 래핑됩니다. 해야 할 나머지 변경 사항은 배치를 **`device`**에 배치하는 줄을 제거하고(다시 말하지만, 이를 유지하려면 **`accelerator.device`**를 사용하도록 변경하면 됩니다) **`loss.backward()`**를 **`accelerator.backward(loss)`**로 바꾸는 것입니다.
+
+<Tip>
+⚠️ Cloud TPU가 제공하는 속도 향상의 이점을 얻으려면, 토크나이저의 `padding="max_length"` 및 `max_length` 인수를 사용하여 샘플을 고정된 길이로 패딩하는 것이 좋습니다.
+</Tip>
+
+가지고 놀기 위해 복사하여 붙여넣고 싶다면, 🤗 Accelerate를 사용한 완전한 훈련 루프는 다음과 같습니다:
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+이것을 **`train.py`** 스크립트에 넣으면, 이 스크립트는 모든 종류의 분산 설정에서 실행 가능하게 됩니다. 분산 설정에서 시도하려면 다음 명령을 실행하십시오:
+
+```bash
+accelerate config
+```
+
+이 명령은 몇 가지 질문에 답하도록 요청하고 이 명령이 사용하는 구성 파일에 답을 덤프합니다:
+
+```
+accelerate launch train.py
+```
+
+이는 분산 훈련을 시작할 것입니다.
+
+(예를 들어, Colab에서 TPU로 테스트하기 위해) 노트북에서 이를 시도하려면, 코드를 **`training_function()`**에 붙여넣고 마지막 셀을 다음으로 실행하십시오:
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+[🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples)에서 더 많은 예제를 찾을 수 있습니다.
+
+<Tip>
+
+🌐 **분산 훈련 (Distributed Training)**: 다중 GPU 및 다중 노드 훈련에 대한 포괄적인 내용은 [🤗 Transformers 분산 훈련 가이드](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) 및 [규모 조정 훈련 쿡북](https://huggingface.co/docs/transformers/main/en/accelerate)을 확인하십시오.
+
+</Tip>
+
+### 다음 단계 및 모범 사례 (Next Steps and Best Practices)
+
+이제 처음부터 훈련을 구현하는 방법을 배웠으므로, 프로덕션 사용을 위한 몇 가지 추가 고려 사항은 다음과 같습니다:
+
+**모델 평가 (Model Evaluation)**: 정확도뿐만 아니라 여러 메트릭에서 모델을 항상 평가하십시오. 포괄적인 평가를 위해 🤗 Evaluate 라이브러리를 사용하십시오.
+
+**하이퍼파라미터 튜닝 (Hyperparameter Tuning)**: 체계적인 하이퍼파라미터 최적화를 위해 Optuna 또는 Ray Tune과 같은 라이브러리 사용을 고려하십시오.
+
+**모델 모니터링 (Model Monitoring)**: 훈련 전반에 걸쳐 훈련 메트릭, 학습 곡선 및 검증 성능을 추적하십시오.
+
+**모델 공유 (Model Sharing)**: 훈련이 완료되면, Hugging Face Hub에 모델을 공유하여 커뮤니티에서 사용할 수 있도록 하십시오.
+
+**효율성 (Efficiency)**: 대규모 모델의 경우 그레이디언트 체크포인트, 매개변수 효율적인 미세 조정(LoRA, AdaLoRA), 또는 양자화 방법과 같은 기술을 고려하십시오.
+
+이것으로 커스텀 훈련 루프를 사용한 미세 조정에 대한 심층적인 내용이 끝납니다. 여기서 배운 기술은 훈련 프로세스를 완전히 제어해야 하거나 `Trainer` API가 제공하는 것을 넘어서는 커스텀 훈련 로직을 구현하려는 경우에 유용할 것입니다.
+
+## 섹션 퀴즈
+
+사용자 지정 훈련 루프 및 고급 훈련 기술에 대한 이해도를 테스트합니다:
+
+1. **Adam과 AdamW 옵티마이저의 주요 차이점은 무엇입니까?**
+    1. AdamW는 다른 학습률 스케줄을 사용합니다.
+    2. AdamW에는 디커플링된 가중치 감소 정규화(decoupled weight decay regularization)가 포함됩니다.
+    3. AdamW는 트랜스포머 모델에서만 작동합니다.
+    4. AdamW는 Adam보다 메모리를 적게 필요로 합니다.
+
+2. **훈련 루프에서 올바른 연산 순서는 무엇입니까?**
+    1. 순전파(Forward pass) → 역전파(Backward pass) → 옵티마이저 스텝(Optimizer step) → 기울기 0 설정(Zero gradients)
+    2. 순전파 → 역전파 → 옵티마이저 스텝 → 스케줄러 스텝(Scheduler step) → 기울기 0 설정
+    3. 기울기 0 설정 → 순전파 → 옵티마이저 스텝 → 역전파
+    4. 순전파 → 기울기 0 설정 → 역전파 → 옵티마이저 스텝
+
+3. **🤗 Accelerate 라이브러리는 주로 무엇을 돕습니까?**
+    1. 순전파를 최적화하여 모델 훈련 속도를 빠르게 만듭니다.
+    2. 최적의 하이퍼파라미터를 자동으로 선택합니다.
+    3. 최소한의 코드 변경으로 여러 GPU/TPU에 걸친 분산 훈련을 가능하게 합니다.
+    4. 모델을 TensorFlow와 같은 다른 프레임워크로 변환합니다.
+
+4. **훈련 루프에서 배치(batch)를 장치(device)로 옮기는 이유는 무엇입니까?**
+    1. 훈련 속도를 빠르게 하기 위해서입니다.
+    2. 계산을 위해 모델과 데이터가 동일한 장치(CPU/GPU)에 있어야 하기 때문입니다.
+    3. 메모리를 절약하기 위해서입니다.
+    4. DataLoader에 의해 요구됩니다.
+
+5. **평가 전에 model.eval()은 무엇을 수행합니까?**
+    1. 모델 매개변수를 고정하여 업데이트되지 않도록 합니다.
+    2. 추론(inference)을 위해 드롭아웃(dropout) 및 배치 정규화(batch normalization)와 같은 레이어의 동작을 변경합니다.
+    3. 평가 메트릭을 위한 기울기 계산을 활성화합니다.
+    4. 평가 메트릭을 자동으로 계산합니다.
+
+6. **평가 중 torch.no_grad()의 목적은 무엇입니까?**
+    1. 모델이 예측을 하지 못하도록 방지합니다.
+    2. 기울기 추적을 비활성화하여 메모리를 절약하고 계산 속도를 높입니다.
+    3. 모델에 대한 평가 모드를 활성화합니다.
+    4. 실행 전반에 걸쳐 일관된 결과를 보장합니다.
+
+7. **훈련 루프에서 🤗 Accelerate를 사용할 때 무엇이 변경됩니까?**
+    1. 전체 훈련 루프를 처음부터 다시 작성해야 합니다.
+    2. 핵심 객체를 accelerator.prepare()로 래핑하고 loss.backward() 대신 accelerator.backward()를 사용합니다.
+    3. 코드에서 GPU 수를 지정해야 합니다.
+    4. 다른 옵티마이저와 스케줄러를 사용해야 합니다.
+<Tip>
+
+💡 **핵심 요약 (Key Takeaways):**
+- 수동 훈련 루프는 완전한 제어를 제공하지만 올바른 순서(순전파 → 역전파 → 옵티마이저 단계 → 스케줄러 단계 → 그레이디언트 초기화)에 대한 이해가 필요합니다.
+- 가중치 감소를 사용한 AdamW는 트랜스포머 모델에 권장되는 옵티마이저입니다.
+- 올바른 동작과 효율성을 위해 평가 중에는 항상 `model.eval()` 및 `torch.no_grad()`를 사용하십시오.
+- 🤗 Accelerate는 최소한의 코드 변경으로 분산 훈련에 접근할 수 있도록 합니다.
+- 장치 관리(텐서를 GPU/CPU로 이동)는 PyTorch 작업에 매우 중요합니다.
+- 혼합 정밀도, 그레이디언트 누적, 그레이디언트 클리핑과 같은 현대적인 기술은 훈련 효율성을 크게 향상시킬 수 있습니다.
+
+</Tip>
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter3/4.mdx" />
