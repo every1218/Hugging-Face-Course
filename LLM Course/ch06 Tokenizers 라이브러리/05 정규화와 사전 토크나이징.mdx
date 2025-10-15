@@ -1,0 +1,119 @@
+# 정규화 및 사전 토큰화 (Normalization and pre-tokenization)
+
+트랜스포머 모델에서 사용되는 세 가지 가장 일반적인 서브워드 토큰화 알고리즘(BPE[Byte-Pair Encoding], WordPiece, 및 Unigram)에 대해 더 깊이 들어가기 전에, 먼저 각 토크나이저가 텍스트에 적용하는 전처리를 살펴볼 것입니다. 다음은 토큰화 파이프라인의 높은 수준의 개요입니다:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
+</div>
+
+텍스트를 모델에 따라 서브토큰으로 분할하기 전에, 토크나이저는 *정규화*와 *사전 토큰화*라는 두 단계를 수행합니다.
+
+## 정규화 (Normalization)
+
+<Youtube id="4IIC2jI9CaU"/>
+
+정규화 단계에는 불필요한 공백 제거, 소문자 변환 및/또는 악센트 제거와 같은 일반적인 정리가 포함됩니다. [유니코드 정규화](http://www.unicode.org/reports/tr15/)(예: NFC 또는 NFKC)에 익숙하다면, 이것도 토크나이저가 적용할 수 있는 것입니다.
+
+🤗 Transformers **`tokenizer`**에는 🤗 Tokenizers 라이브러리의 기본 토크나이저에 접근할 수 있는 **`backend_tokenizer`**라는 속성이 있습니다:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+print(type(tokenizer.backend_tokenizer))
+```
+
+```python out
+<class 'tokenizers.Tokenizer'>
+```
+
+**`tokenizer`** 객체의 **`normalizer`** 속성에는 정규화가 어떻게 수행되는지 확인하는 데 사용할 수 있는 **`normalize_str()`** 메서드가 있습니다:
+
+```py
+print(tokenizer.backend_tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+'hello how are u?'
+```
+
+이 예제에서는 **`bert-base-uncased`** 체크포인트를 선택했기 때문에 적용된 정규화는 소문자 변환 및 악센트 제거를 수행했습니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** **`bert-base-cased`** 체크포인트에서 토크나이저를 로드하고 동일한 예제를 전달하십시오. 토크나이저의 cased 및 uncased 버전에서 볼 수 있는 주요 차이점은 무엇입니까?
+
+</Tip>
+
+## 사전 토큰화 (Pre-tokenization)
+
+<Youtube id="grlLV8AIXug"/>
+
+다음 섹션에서 보겠지만, 토크나이저는 원시 텍스트만으로는 훈련될 수 없습니다. 대신, 먼저 텍스트를 단어와 같은 작은 개체로 분할해야 합니다. 여기서 사전 토큰화 단계가 작용합니다. [챕터 2](/course/chapter2)에서 보았듯이, 단어 기반 토크나이저는 공백과 구두점을 기준으로 원시 텍스트를 단어로 분할할 수 있습니다. 이러한 단어는 토크나이저가 훈련 중에 학습할 수 있는 서브토큰의 경계가 될 것입니다.
+
+빠른 토크나이저가 사전 토큰화를 수행하는 방법을 확인하기 위해 **`tokenizer`** 객체의 **`pre_tokenizer`** 속성의 **`pre_tokenize_str()`** 메서드를 사용할 수 있습니다:
+
+```py
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('how', (7, 10)), ('are', (11, 14)), ('you', (16, 19)), ('?', (19, 20))]
+```
+
+토크나이저가 이미 오프셋을 추적하고 있다는 점에 유의하십시오. 이것이 이전 섹션에서 사용한 오프셋 매핑을 제공할 수 있는 방법입니다. 여기서 토크나이저는 두 개의 공백을 무시하고 하나로 대체하지만, **`are`**와 **`you`** 사이의 오프셋은 이를 설명하기 위해 건너뜁니다.
+
+BERT 토크나이저를 사용하고 있으므로 사전 토큰화에는 공백과 구두점을 기준으로 분할하는 것이 포함됩니다. 다른 토크나이저는 이 단계에 대해 다른 규칙을 가질 수 있습니다. 예를 들어, GPT-2 토크나이저를 사용하는 경우:
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+공백과 구두점을 기준으로도 분할하지만, 공백을 유지하고 **`Ġ`** 기호로 대체하여 토큰을 디코딩할 때 원래 공백을 복구할 수 있도록 합니다:
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('Ġhow', (6, 10)), ('Ġare', (10, 14)), ('Ġ', (14, 15)), ('Ġyou', (15, 19)),
+ ('?', (19, 20))]
+```
+
+또한 BERT 토크나이저와 달리 이 토크나이저는 이중 공백을 무시하지 않습니다.
+
+마지막 예시로, SentencePiece 알고리즘을 기반으로 하는 T5 토크나이저를 살펴보겠습니다:
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("t5-small")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[(' Hello,', (0, 6)), (' how', (7, 10)), (' are', (11, 14)), (' you?', (16, 20))]
+```
+
+GPT-2 토크나이저와 마찬가지로, 이 토크나이저는 공백을 유지하고 특정 토큰(**`_`**)으로 대체하지만, T5 토크나이저는 구두점이 아닌 공백에서만 분할합니다. 또한 문장 시작 부분에 기본적으로 공백을 추가하고(**`Hello`** 앞), **`are`**와 **`you`** 사이의 이중 공백을 무시한다는 점에 유의하십시오.
+
+이제 일부 다른 토크나이저가 텍스트를 처리하는 방법을 조금 살펴보았으므로, 기본 알고리즘 자체를 탐색하기 시작할 수 있습니다. 먼저 광범위하게 적용 가능한 SentencePiece를 간략하게 살펴본 다음, 다음 세 섹션에 걸쳐 서브워드 토큰화에 사용되는 세 가지 주요 알고리즘이 어떻게 작동하는지 검토할 것입니다.
+
+## SentencePiece
+
+[SentencePiece](https://github.com/google/sentencepiece)는 텍스트 전처리를 위한 토큰화 알고리즘으로, 다음 세 섹션에서 볼 모든 모델과 함께 사용할 수 있습니다. 이는 텍스트를 유니코드 문자 시퀀스로 간주하고 공백을 특수 문자 **` `**로 대체합니다. Unigram 알고리즘([섹션 7](/course/chapter6/7) 참조)과 함께 사용하면 사전 토큰화 단계가 필요하지 않으며, 이는 공백 문자가 사용되지 않는 언어(예: 중국어 또는 일본어)에 매우 유용합니다.
+
+SentencePiece의 다른 주요 기능은 *가역적 토큰화*입니다. 공백에 대한 특별한 처리가 없으므로, 토큰을 디코딩하는 것은 단순히 토큰을 연결하고 **`_`**를 공백으로 대체하는 것으로 수행됩니다. 이는 정규화된 텍스트로 이어집니다. 이전에 보았듯이 BERT 토크나이저는 반복되는 공백을 제거하므로 토큰화는 가역적이지 않습니다.
+
+## 알고리즘 개요 (Algorithm overview)
+
+다음 섹션에서는 세 가지 주요 서브워드 토큰화 알고리즘인 BPE(GPT-2 등이 사용), WordPiece(BERT 등이 사용), 및 Unigram(T5 등이 사용)에 대해 자세히 알아볼 것입니다. 시작하기 전에, 각각이 어떻게 작동하는지에 대한 간략한 개요입니다. 아직 이해가 되지 않으면 다음 섹션을 읽은 후 이 표로 돌아오는 것을 주저하지 마십시오.
+
+
+| 모델 | BPE | WordPiece | Unigram |
+|:----:|:---:|:---------:|:------:|
+| 훈련 | 작은 어휘에서 시작하여 토큰을 병합하는 규칙을 학습 | 작은 어휘에서 시작하여 토큰을 병합하는 규칙을 학습 | 큰 어휘에서 시작하여 토큰을 제거하는 규칙을 학습 |
+| 훈련 단계 | 가장 일반적인 쌍에 해당하는 토큰을 병합 | 쌍의 빈도에 따라 가장 좋은 점수를 가진 쌍에 해당하는 토큰을 병합하며, 개별 토큰의 빈도가 낮은 쌍을 선호 | 전체 코퍼스에서 계산된 손실을 최소화할 어휘의 모든 토큰을 제거 |
+| 학습 내용 | 병합 규칙 및 어휘 | 어휘만 | 각 토큰에 대한 점수가 있는 어휘 |
+| 인코딩 | 단어를 문자로 분할하고 훈련 중에 학습된 병합을 적용 | 시작부터 어휘에 있는 가장 긴 서브워드를 찾은 다음 단어의 나머지 부분에 대해 동일하게 수행 | 훈련 중에 학습된 점수를 사용하여 가장 가능성이 높은 토큰 분할을 찾음 |
+
+이제 BPE에 대해 자세히 알아보겠습니다!
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter6/4.mdx" />
