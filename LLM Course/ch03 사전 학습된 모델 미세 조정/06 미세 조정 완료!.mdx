@@ -1,0 +1,42 @@
+# 미세 조정 완료! (Fine-tuning, Check!)
+
+매우 포괄적인 내용이었습니다! 처음 두 챕터에서 모델과 토크나이저에 대해 배웠고, 이제 현대적인 모범 사례를 사용하여 자신의 데이터에 맞게 이들을 미세 조정하는 방법을 알게 되었습니다. 요약하자면, 이 챕터에서 당신은 다음을 수행했습니다:
+
+* [Hub](https://huggingface.co/datasets)의 데이터셋과 현대적인 데이터 처리 기술에 대해 배웠습니다.
+* 동적 패딩 및 데이터 콜레이터를 사용하는 것을 포함하여 데이터셋을 효율적으로 로드하고 전처리하는 방법을 배웠습니다.
+* 최신 기능을 갖춘 고수준 **`Trainer`** API를 사용하여 미세 조정 및 평가를 구현했습니다.
+* PyTorch를 사용하여 처음부터 완전한 커스텀 훈련 루프를 구현했습니다.
+* 🤗 Accelerate를 사용하여 훈련 코드가 여러 GPU 또는 TPU에서 원활하게 작동하도록 했습니다.
+* 혼합 정밀도 훈련 및 그레이디언트 누적과 같은 현대적인 최적화 기술을 적용했습니다.
+
+<Tip>
+
+🎉 **축하합니다!** 트랜스포머 모델 미세 조정의 기본을 마스터했습니다. 이제 실제 ML 프로젝트에 도전할 준비가 되었습니다!
+
+📖 **계속 학습하기 (Continue Learning)**: 지식을 심화하기 위해 다음 리소스를 탐색하십시오:
+- 특정 NLP 작업을 위한 [🤗 Transformers 작업 가이드](https://huggingface.co/docs/transformers/main/en/tasks/sequence_classification)
+- 포괄적인 노트북을 위한 [🤗 Transformers 예시](https://huggingface.co/docs/transformers/main/en/notebooks)
+
+🚀 **다음 단계 (Next Steps)**: 
+- 배운 기술을 사용하여 자신의 데이터셋에서 미세 조정을 시도해 보세요.
+- [Hugging Face Hub](https://huggingface.co/models)에서 사용 가능한 다양한 모델 아키텍처로 실험해 보세요.
+- [Hugging Face 커뮤니티](https://discuss.huggingface.co/)에 가입하여 프로젝트를 공유하고 도움을 받으세요.
+
+</Tip>
+
+이것은 🤗 Transformers와의 여정의 시작일 뿐입니다. 다음 챕터에서는 모델과 토크나이저를 커뮤니티와 공유하고 끊임없이 성장하는 사전 훈련된 모델 생태계에 기여하는 방법을 탐구할 것입니다.
+
+여기서 개발한 기술, 즉 데이터 전처리, 훈련 구성, 평가 및 최적화는 모든 기계 학습 프로젝트의 기본입니다. 텍스트 분류, 개체명 인식, 질문 답변 또는 기타 NLP 작업에서 작업하든 관계없이 이러한 기술은 유용할 것입니다.
+
+<Tip>
+
+💡 **성공을 위한 전문가 팁 (Pro Tips for Success)**:
+- 커스텀 훈련 루프를 구현하기 전에 항상 **`Trainer`** API를 사용하여 강력한 기준선으로 시작하십시오.
+- 더 나은 시작점을 위해 Hugging Face Hub를 사용하여 작업과 유사한 사전 훈련된 모델을 찾으십시오.
+- 적절한 평가 메트릭으로 훈련을 모니터링하고 체크포인트를 저장하는 것을 잊지 마십시오.
+- 커뮤니티를 활용하십시오. 모델과 데이터셋을 공유하여 다른 사람들을 돕고 작업에 대한 피드백을 받으십시오.
+
+</Tip>
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter3/6.mdx" />
