@@ -1,0 +1,355 @@
+# 바이트 쌍 인코딩 토큰화 (Byte-Pair Encoding tokenization)
+
+Byte-Pair Encoding (BPE)는 원래 텍스트를 압축하기 위한 알고리즘으로 개발되었으며, 이후 GPT 모델을 사전 훈련할 때 OpenAI에서 토큰화에 사용되었습니다. 이는 GPT, GPT-2, RoBERTa, BART, 및 DeBERTa를 포함하여 많은 트랜스포머 모델에서 사용됩니다.
+
+<Youtube id="HEikzVL-lZU"/>
+
+<Tip>
+
+💡 이 섹션은 BPE를 심층적으로 다루며, 전체 구현을 보여주는 것까지 진행합니다. 토큰화 알고리즘에 대한 일반적인 개요만 원하면 끝으로 건너뛸 수 있습니다.
+
+</Tip>
+
+## 훈련 알고리즘 (Training algorithm)
+
+BPE 훈련은 코퍼스에서 사용되는 고유한 단어 세트를 계산하는 것으로 시작하며(정규화 및 사전 토큰화 단계가 완료된 후), 해당 단어를 작성하는 데 사용되는 모든 기호를 가져와 어휘를 구축합니다. 매우 간단한 예로, 우리의 코퍼스가 다음 다섯 단어를 사용한다고 가정해 봅시다:
+
+```
+"hug", "pug", "pun", "bun", "hugs"
+```
+
+그러면 기본 어휘는 **`["b", "g", "h", "n", "p", "s", "u"]`**가 될 것입니다. 실제 사례의 경우, 이 기본 어휘에는 적어도 모든 ASCII 문자가 포함되며, 아마도 일부 유니코드 문자도 포함될 것입니다. 토큰화하는 예제가 훈련 코퍼스에 없는 문자를 사용하는 경우, 해당 문자는 unknown 토큰으로 변환됩니다. 이것이 많은 NLP 모델이 예를 들어 이모티콘이 포함된 콘텐츠를 분석하는 데 매우 서툰 이유 중 하나입니다.
+
+<Tip>
+
+GPT-2 및 RoBERTa 토크나이저(상당히 유사함)는 이를 처리하는 영리한 방법이 있습니다. 단어를 유니코드 문자로 작성된 것으로 보지 않고 **바이트**로 작성된 것으로 봅니다. 이 방식으로 기본 어휘는 크기가 작지만(256), 생각할 수 있는 모든 문자가 여전히 포함되며 unknown 토큰으로 변환되지 않습니다. 이 트릭을 *바이트 수준 BPE(byte-level BPE)*라고 합니다.
+
+</Tip>
+
+이 기본 어휘를 얻은 후에는 기존 어휘의 두 요소를 새 요소로 병합하는 규칙인 *병합(merges)*을 학습하여 원하는 어휘 크기에 도달할 때까지 새 토큰을 추가합니다. 따라서 처음에는 이러한 병합이 두 문자로 된 토큰을 생성하고, 훈련이 진행됨에 따라 더 긴 서브워드를 생성합니다.
+
+토크나이저 훈련 중 모든 단계에서 BPE 알고리즘은 기존 토큰 쌍 중 가장 자주 발생하는 쌍을 검색합니다(여기서 "쌍"은 단어에서 연속적인 두 토큰을 의미합니다). 가장 자주 발생하는 쌍이 병합될 쌍이며, 다음 단계를 위해 반복합니다.
+
+이전 예제로 돌아가서 단어가 다음과 같은 빈도를 가졌다고 가정해 봅시다:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+이는 코퍼스에 **`"hug"`**가 10번, **`"pug"`**가 5번, **`"pun"`이** 12번, **`"bun"`이** 4번, 그리고 **`"hugs"`**가 5번 존재했음을 의미합니다. 우리는 각 단어를 문자(초기 어휘를 형성하는 문자)로 분할하여 각 단어를 토큰 목록으로 볼 수 있도록 훈련을 시작합니다:
+
+```
+("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
+```
+
+그런 다음 쌍을 살펴봅니다. 쌍 **`("h", "u")`**는 단어 **`"hug"`**와 **`"hugs"`**에 존재하므로 코퍼스 전체에서 총 15번 존재합니다. 그러나 가장 자주 발생하는 쌍은 아닙니다. 그 영광은 코퍼스 전체에서 총 20번 존재하는 **`("u", "g")`**에 속합니다.
+
+따라서 토크나이저가 학습한 첫 번째 병합 규칙은 **`("u", "g") -> "ug"`**이며, 이는 **`"ug"`**가 어휘에 추가되고 코퍼스의 모든 단어에서 쌍이 병합되어야 함을 의미합니다. 이 단계가 끝날 때 어휘와 코퍼스는 다음과 같이 보입니다:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
+```
+
+이제 두 문자보다 긴 토큰으로 이어지는 일부 쌍이 있습니다. 예를 들어, 쌍 **`("h", "ug")`**(코퍼스에 15번 존재)입니다. 그러나 이 단계에서 가장 자주 발생하는 쌍은 **`("u", "n")`**이며, 코퍼스에 16번 존재하므로, 학습된 두 번째 병합 규칙은 **`("u", "n") -> "un"`**입니다. 이를 어휘에 추가하고 기존 발생을 모두 병합하면 다음과 같습니다:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
+```
+
+이제 가장 자주 발생하는 쌍은 **`("h", "ug")`**이므로 **`("h", "ug") -> "hug"`** 병합 규칙을 학습하며, 이는 첫 번째 세 글자 토큰을 제공합니다. 병합 후 코퍼스는 다음과 같이 보입니다:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
+Corpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
+```
+
+그리고 원하는 어휘 크기에 도달할 때까지 이와 같이 계속합니다.
+
+<Tip>
+
+✏️ **이제 당신 차례입니다!** 다음 병합 규칙은 무엇이라고 생각합니까?
+
+</Tip>
+
+## 토큰화 알고리즘 (Tokenization algorithm)
+
+토큰화는 훈련 과정을 밀접하게 따르며, 새 입력은 다음 단계를 적용하여 토큰화됩니다:
+
+1. 정규화
+2. 사전 토큰화
+3. 단어를 개별 문자로 분할
+4. 학습된 병합 규칙을 해당 분할에 순서대로 적용
+
+학습된 세 가지 병합 규칙과 함께 훈련 중에 사용한 예제를 가져와 봅시다:
+
+```
+("u", "g") -> "ug"
+("u", "n") -> "un"
+("h", "ug") -> "hug"
+```
+
+단어 **`"bug"`**는 **`["b", "ug"]`**로 토큰화될 것입니다. 그러나 단어 **`"mug"`**는 문자 **`"m"`**이 기본 어휘에 없었기 때문에 **`["[UNK]", "ug"]`**로 토큰화될 것입니다. 마찬가지로, 단어 **`"thug"`**는 **`["[UNK]", "hug"]`**로 토큰화될 것입니다. 문자 **`"t"`**는 기본 어휘에 없으며, 병합 규칙을 적용하면 먼저 **`"u"`**와 **`"g"`**가 병합된 다음 **`"h"`**와 **`"ug"`**가 병합됩니다.
+
+<Tip>
+
+✏️ **이제 당신 차례입니다!** 단어 **`"unhug"`**가 어떻게 토큰화될 것이라고 생각합니까?
+
+</Tip>
+
+## BPE 구현하기 (Implementing BPE)
+
+이제 BPE 알고리즘의 구현을 살펴보겠습니다. 이것은 큰 코퍼스에서 실제로 사용할 수 있는 최적화된 버전은 아닙니다. 알고리즘을 조금 더 잘 이해할 수 있도록 코드를 보여주고 싶을 뿐입니다.
+
+먼저 코퍼스가 필요하므로 몇 문장으로 간단한 코퍼스를 만들어 봅시다:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+다음으로, 해당 코퍼스를 단어로 사전 토큰화해야 합니다. BPE 토크나이저(GPT-2와 같은)를 복제하고 있으므로 사전 토큰화에 **`gpt2`** 토크나이저를 사용할 것입니다:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+그런 다음 사전 토큰화를 수행할 때 코퍼스의 각 단어의 빈도를 계산합니다:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+print(word_freqs)
+```
+
+```python out
+defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1, 'ĠCourse': 1, '.': 4, 'Ġchapter': 1,
+    'Ġabout': 1, 'Ġtokenization': 1, 'Ġsection': 1, 'Ġshows': 1, 'Ġseveral': 1, 'Ġtokenizer': 1, 'Ġalgorithms': 1,
+    'Hopefully': 1, ',': 1, 'Ġyou': 1, 'Ġwill': 1, 'Ġbe': 1, 'Ġable': 1, 'Ġto': 1, 'Ġunderstand': 1, 'Ġhow': 1,
+    'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
+```
+
+다음 단계는 코퍼스에서 사용된 모든 문자로 구성된 기본 어휘를 계산하는 것입니다:
+
+```python
+alphabet = []
+
+for word in word_freqs.keys():
+    for letter in word:
+        if letter not in alphabet:
+            alphabet.append(letter)
+alphabet.sort()
+
+print(alphabet)
+```
+
+```python out
+[ ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's',
+  't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
+```
+
+또한 해당 어휘의 시작 부분에 모델에서 사용되는 특수 토큰을 추가합니다. GPT-2의 경우 유일한 특수 토큰은 **`"<|endoftext|>"`**입니다:
+
+```python
+vocab = ["<|endoftext|>"] + alphabet.copy()
+```
+
+이제 각 단어를 개별 문자로 분할하여 훈련을 시작할 수 있어야 합니다:
+
+```python
+splits = {word: [c for c in word] for word in word_freqs.keys()}
+```
+
+이제 훈련할 준비가 되었으므로, 각 쌍의 빈도를 계산하는 함수를 작성해 봅시다. 훈련의 각 단계에서 이 함수가 필요합니다:
+
+```python
+def compute_pair_freqs(splits):
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            pair_freqs[pair] += freq
+    return pair_freqs
+```
+
+초기 분할 후 이 딕셔너리의 일부를 살펴봅시다:
+
+```python
+pair_freqs = compute_pair_freqs(splits)
+
+for i, key in enumerate(pair_freqs.keys()):
+    print(f"{key}: {pair_freqs[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', 'h'): 3
+('h', 'i'): 3
+('i', 's'): 5
+('Ġ', 'i'): 2
+('Ġ', 't'): 7
+('t', 'h'): 3
+```
+
+이제 가장 자주 발생하는 쌍을 찾는 데는 빠른 루프만 있으면 됩니다:
+
+```python
+best_pair = ""
+max_freq = None
+
+for pair, freq in pair_freqs.items():
+    if max_freq is None or max_freq < freq:
+        best_pair = pair
+        max_freq = freq
+
+print(best_pair, max_freq)
+```
+
+```python out
+('Ġ', 't') 7
+```
+
+따라서 학습할 첫 번째 병합은 **`('Ġ', 't') -> 'Ġt'`**이며, **`'Ġt'`**를 어휘에 추가합니다:
+
+```python
+merges = {("Ġ", "t"): "Ġt"}
+vocab.append("Ġt")
+```
+
+계속하려면 **`splits`** 딕셔너리에서 해당 병합을 적용해야 합니다. 이를 위한 또 다른 함수를 작성해 봅시다:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                split = split[:i] + [a + b] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+그리고 첫 번째 병합의 결과를 살펴볼 수 있습니다:
+
+```py
+splits = merge_pair("Ġ", "t", splits)
+print(splits["Ġtrained"])
+```
+
+```python out
+['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
+```
+
+이제 원하는 모든 병합을 학습할 때까지 루프를 돌리는 데 필요한 모든 것이 있습니다. 어휘 크기를 50으로 목표로 합시다:
+
+```python
+vocab_size = 50
+
+while len(vocab) < vocab_size:
+    pair_freqs = compute_pair_freqs(splits)
+    best_pair = ""
+    max_freq = None
+    for pair, freq in pair_freqs.items():
+        if max_freq is None or max_freq < freq:
+            best_pair = pair
+            max_freq = freq
+    splits = merge_pair(*best_pair, splits)
+    merges[best_pair] = best_pair[0] + best_pair[1]
+    vocab.append(best_pair[0] + best_pair[1])
+```
+
+결과적으로, 19개의 병합 규칙을 학습했습니다(초기 어휘는 31개였습니다. 알파벳의 30개 문자, 더하기 특수 토큰):
+
+```py
+print(merges)
+```
+
+```python out
+{('Ġ', 't'): 'Ġt', ('i', 's'): 'is', ('e', 'r'): 'er', ('Ġ', 'a'): 'Ġa', ('Ġt', 'o'): 'Ġto', ('e', 'n'): 'en',
+ ('T', 'h'): 'Th', ('Th', 'is'): 'This', ('o', 'u'): 'ou', ('s', 'e'): 'se', ('Ġto', 'k'): 'Ġtok',
+ ('Ġtok', 'en'): 'Ġtoken', ('n', 'd'): 'nd', ('Ġ', 'is'): 'Ġis', ('Ġt', 'h'): 'Ġth', ('Ġth', 'e'): 'Ġthe',
+ ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
+```
+
+그리고 어휘는 특수 토큰, 초기 알파벳, 그리고 모든 병합 결과로 구성됩니다:
+
+```py
+print(vocab)
+```
+
+```python out
+['<|endoftext|>', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o',
+ 'p', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z', 'Ġ', 'Ġt', 'is', 'er', 'Ġa', 'Ġto', 'en', 'Th', 'This', 'ou', 'se',
+ 'Ġtok', 'Ġtoken', 'nd', 'Ġis', 'Ġth', 'Ġthe', 'in', 'Ġab', 'Ġtokeni']
+```
+
+<Tip>
+
+💡 동일한 코퍼스에서 **`train_new_from_iterator()`**를 사용하는 것은 정확히 동일한 어휘를 생성하지 않을 것입니다. 이는 가장 자주 발생하는 쌍을 선택할 때 우리가 처음 발견한 것을 선택한 반면, 🤗 Tokenizers 라이브러리는 내부 ID를 기반으로 첫 번째 것을 선택하기 때문입니다.
+
+</Tip>
+
+새 텍스트를 토큰화하려면, 이를 사전 토큰화하고, 분할한 다음, 학습된 모든 병합 규칙을 적용합니다:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    splits = [[l for l in word] for word in pre_tokenized_text]
+    for pair, merge in merges.items():
+        for idx, split in enumerate(splits):
+            i = 0
+            while i < len(split) - 1:
+                if split[i] == pair[0] and split[i + 1] == pair[1]:
+                    split = split[:i] + [merge] + split[i + 2 :]
+                else:
+                    i += 1
+            splits[idx] = split
+
+    return sum(splits, [])
+```
+
+알파벳의 문자로 구성된 모든 텍스트에서 이를 시도할 수 있습니다:
+
+```py
+tokenize("This is not a token.")
+```
+
+```python out
+['This', 'Ġis', 'Ġ', 'n', 'o', 't', 'Ġa', 'Ġtoken', '.']
+```
+
+<Tip warning={true}>
+
+⚠️ 우리의 구현은 unknown 문자를 처리하기 위해 아무것도 하지 않았기 때문에 unknown 문자가 있으면 오류가 발생합니다. GPT-2에는 실제로 unknown 토큰이 없습니다(바이트 수준 BPE를 사용할 때 unknown 문자를 얻는 것은 불가능합니다). 그러나 초기 어휘에 가능한 모든 바이트를 포함하지 않았기 때문에 여기서는 발생할 수 있습니다. BPE의 이 측면은 이 섹션의 범위를 벗어나므로 세부 정보를 생략했습니다.
+
+</Tip>
+
+BPE 알고리즘은 여기까지입니다! 다음으로 WordPiece를 살펴보겠습니다.
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter6/5.mdx" />
