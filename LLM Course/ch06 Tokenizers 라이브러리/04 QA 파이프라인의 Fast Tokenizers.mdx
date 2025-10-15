@@ -1,0 +1,465 @@
+# QA 파이프라인의 빠른 토크나이저 (Fast tokenizers in the QA pipeline)
+
+이제 **`question-answering`** 파이프라인을 자세히 살펴보고, 이전 섹션에서 그룹화된 개체에 대해 했던 것처럼 오프셋을 활용하여 컨텍스트에서 당면한 질문에 대한 답을 가져오는 방법을 살펴보겠습니다. 그런 다음 잘릴 수 있는 매우 긴 컨텍스트를 처리하는 방법을 알아볼 것입니다. 질문 답변 작업에 관심이 없다면 이 섹션을 건너뛸 수 있습니다.
+
+<Youtube id="_wxyB3j3mk4"/>
+
+## `question-answering` 파이프라인 사용하기 (Using the `question-answering` pipeline)
+
+[챕터 1](/course/chapter1)에서 보았듯이, 질문에 대한 답을 얻기 위해 **`question-answering`** 파이프라인을 다음과 같이 사용할 수 있습니다:
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+최대 길이가 허용하는 것보다 긴 텍스트를 자르고 분할할 수 없는 다른 파이프라인과 달리(따라서 문서 끝의 정보를 놓칠 수 있음), 이 파이프라인은 매우 긴 컨텍스트를 처리할 수 있으며 답이 끝에 있더라도 질문에 대한 답을 반환합니다:
+
+```py
+long_context = """
+🤗 Transformers: State of the Art NLP
+
+🤗 Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+🤗 Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internals are exposed as consistently as possible.
+  - Model files can be used independently of the library for quick experiments.
+
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+이 모든 것을 어떻게 수행하는지 살펴봅시다!
+
+## 질문 답변을 위한 모델 사용 (Using a model for question answering)
+
+다른 파이프라인과 마찬가지로, 입력을 토큰화한 다음 모델을 통과시키는 것으로 시작합니다. **`question-answering`** 파이프라인에 대해 기본적으로 사용되는 체크포인트는 [`distilbert-base-cased-distilled-squad`](https://huggingface.co/distilbert-base-cased-distilled-squad)입니다(이름의 "squad"는 모델이 미세 조정된 데이터셋에서 유래합니다. [챕터 7](/course/chapter7/7)에서 SQuAD 데이터셋에 대해 더 자세히 이야기할 것입니다):
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+질문을 먼저 두고 질문과 컨텍스트를 쌍으로 토큰화한다는 점에 유의하십시오.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="An example of tokenization of question and context"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="An example of tokenization of question and context"/>
+</div>
+
+질문 답변을 위한 모델은 지금까지 우리가 보았던 모델과 약간 다르게 작동합니다. 위의 그림을 예로 들면, 모델은 답변이 시작되는 토큰의 인덱스(여기서는 21)와 답변이 끝나는 토큰의 인덱스(여기서는 24)를 예측하도록 훈련되었습니다. 이것이 이 모델들이 하나의 로짓 텐서가 아닌 두 개의 로짓 텐서를 반환하는 이유입니다: 하나는 답변의 시작 토큰에 해당하는 로짓용이고, 다른 하나는 답변의 끝 토큰에 해당하는 로짓용입니다. 이 경우 66개의 토큰을 포함하는 입력이 하나만 있으므로 다음을 얻습니다:
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+이러한 로짓을 확률로 변환하려면 소프트맥스 함수를 적용해야 합니다. 그러나 그 전에 컨텍스트의 일부가 아닌 인덱스를 마스킹해야 합니다. 우리의 입력은 **`[CLS] question [SEP] context [SEP]`**이므로, 질문의 토큰과 **`[SEP]`** 토큰을 마스킹해야 합니다. 그러나 일부 모델은 답변이 컨텍스트에 없음을 나타내는 데 사용하므로 **`[CLS]`** 토큰은 유지합니다.
+
+소프트맥스를 적용할 것이므로, 마스킹하려는 로짓을 큰 음수로 대체하기만 하면 됩니다. 여기서는 **`-10000`**을 사용합니다:
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# 컨텍스트의 토큰을 제외한 모든 것을 마스킹
+mask = [i != 1 for i in sequence_ids]
+# [CLS] 토큰 마스킹 해제
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+이제 예측하고 싶지 않은 위치에 해당하는 로짓을 제대로 마스킹했으므로, 소프트맥스를 적용할 수 있습니다:
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+이 단계에서 시작 및 끝 확률의 argmax를 취할 수 있지만, 시작 인덱스가 끝 인덱스보다 커지는 결과를 얻을 수 있으므로 몇 가지 예방 조치를 더 취해야 합니다. **`start_index <= end_index`**인 각 가능한 **`start_index`**와 **`end_index`**의 확률을 계산한 다음, 가장 높은 확률을 가진 튜플 **`(start_index, end_index)`**를 취할 것입니다.
+
+"답변이 **`start_index`**에서 시작"하는 이벤트와 "답변이 **`end_index`**에서 끝"나는 이벤트가 독립적이라고 가정하면, 답변이 **`start_index`**에서 시작하고 **`end_index`**에서 끝날 확률은 다음과 같습니다:
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$ 
+
+따라서 모든 점수를 계산하려면 **`start_index <= end_index`**인 모든 곱셈 \\(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\\)를 계산하기만 하면 됩니다.
+
+먼저 가능한 모든 곱셈을 계산해 봅시다:
+
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+그런 다음 **`start_index > end_index`**인 값을 **`0`**으로 설정하여 마스킹합니다(다른 확률은 모두 양수입니다). **`torch.triu()`** 함수는 인수로 전달된 2D 텐서의 상위 삼각 부분을 반환하므로, 우리를 위해 해당 마스킹을 수행할 것입니다:
+
+```py
+scores = torch.triu(scores)
+```
+
+이제 최대값의 인덱스를 가져와야 합니다. PyTorch는 평탄화된 텐서의 인덱스를 반환하므로, **`start_index`**와 **`end_index`**를 얻으려면 정수 나누기 **`//`** 및 모듈러스 **`%`** 연산을 사용해야 합니다:
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+아직 완전히 완료되지 않았지만, 적어도 답변에 대한 올바른 점수는 이미 가지고 있습니다(이전 섹션의 첫 번째 결과와 비교하여 확인할 수 있습니다):
+
+```python out
+0.97773
+```
+
+<Tip>
+
+✏️ **직접 해보세요!** 가장 가능성이 높은 다섯 가지 답변에 대한 시작 및 끝 인덱스를 계산하십시오.
+
+</Tip>
+
+토큰 측면에서 답변의 **`start_index`**와 **`end_index`**가 있으므로, 이제 컨텍스트의 문자 인덱스로 변환하기만 하면 됩니다. 여기서 오프셋이 매우 유용할 것입니다. 토큰 분류 작업에서 했던 것처럼 오프셋을 가져와서 사용할 수 있습니다:
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+이제 모든 것을 포맷하여 결과를 얻기만 하면 됩니다:
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+훌륭합니다! 이는 첫 번째 예제와 동일합니다!
+
+<Tip>
+
+✏️ **직접 해보세요!** 이전에 계산한 가장 좋은 점수를 사용하여 가장 가능성이 높은 다섯 가지 답변을 표시하십시오(전체 컨텍스트에 대해, 각 청크에 대해서가 아님). 결과를 확인하려면 첫 번째 파이프라인으로 돌아가서 호출할 때 **`top_k=5`**를 전달하십시오.
+
+</Tip>
+
+## 긴 컨텍스트 처리 (Handling long contexts)
+
+이전에 예제로 사용한 질문과 긴 컨텍스트를 토큰화하려고 하면, **`question-answering`** 파이프라인에서 사용되는 최대 길이(384)보다 높은 토큰 수를 얻게 됩니다:
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+```python out
+461
+```
+
+따라서 입력을 해당 최대 길이로 잘라야 합니다. 이를 수행할 수 있는 몇 가지 방법이 있지만, 질문이 아닌 컨텍스트만 자르고 싶습니다. 컨텍스트가 두 번째 문장이므로, **`"only_second"`** 자르기 전략을 사용할 것입니다. 여기서 발생하는 문제는 질문에 대한 답이 잘린 컨텍스트에 없을 수 있다는 것입니다. 예를 들어, 여기서는 답이 컨텍스트의 끝 부분에 있는 질문을 선택했으며, 이를 자르면 해당 답이 존재하지 않습니다:
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+```python out
+"""
+[CLS] Which deep learning libraries back [UNK] Transformers? [SEP] [UNK] Transformers : State of the Art NLP
+
+[UNK] Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+[UNK] Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internal [SEP]
+"""
+```
+
+이것은 모델이 올바른 답을 선택하는 데 어려움을 겪을 것임을 의미합니다. 이를 해결하기 위해 **`question-answering`** 파이프라인을 사용하면 컨텍스트를 더 작은 청크로 분할하고 최대 길이를 지정할 수 있습니다. 답을 찾을 수 없도록 컨텍스트를 정확히 잘못된 위치에서 분할하지 않도록 하기 위해 청크 간에 일부 오버랩도 포함합니다.
+
+**`return_overflowing_tokens=True`**를 추가하여 토크나이저(빠르든 느리든)가 이 작업을 수행하도록 할 수 있으며, **`stride`** 인수로 원하는 오버랩을 지정할 수 있습니다. 다음은 더 작은 문장을 사용하는 예입니다:
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+보시다시피, 문장이 청크로 분할되어 **`inputs["input_ids"]`**의 각 항목에는 최대 6개의 토큰이 있고(마지막 항목이 다른 항목과 동일한 크기를 갖도록 패딩을 추가해야 함) 각 항목 사이에 2개의 토큰 오버랩이 있습니다.
+
+토큰화 결과를 자세히 살펴보겠습니다:
+
+```py
+print(inputs.keys())
+```
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+예상대로, 입력 ID와 어텐션 마스크를 얻습니다. 마지막 키인 **`overflow_to_sample_mapping`**은 결과 각각이 어떤 문장에 해당하는지 알려주는 맵입니다. 여기서는 토크나이저에 전달한 (유일한) 문장에서 7개의 결과가 모두 파생됩니다:
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+여러 문장을 함께 토큰화할 때 더 유용합니다. 예를 들어, 다음은:
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+다음 결과를 얻습니다:
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+이는 첫 번째 문장이 이전과 같이 7개의 청크로 분할되고, 다음 4개의 청크는 두 번째 문장에서 파생됨을 의미합니다.
+
+이제 긴 컨텍스트로 돌아갑시다. 기본적으로 **`question-answering`** 파이프라인은 이전에 언급했듯이 최대 길이 384와 스트라이드 128을 사용합니다. 이는 모델이 미세 조정된 방식에 해당합니다(파이프라인을 호출할 때 **`max_seq_len`** 및 **`stride`** 인수를 전달하여 이 매개변수를 조정할 수 있습니다). 따라서 토큰화할 때 해당 매개변수를 사용할 것입니다. 또한 패딩(동일한 길이의 샘플을 갖도록, 텐서를 구축할 수 있도록)과 오프셋을 요청할 것입니다:
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+이 **`inputs`**는 모델이 예상하는 입력 ID와 어텐션 마스크뿐만 아니라 방금 이야기한 오프셋과 **`overflow_to_sample_mapping`**을 포함할 것입니다. 이 두 가지는 모델에서 사용되는 매개변수가 아니므로, 텐서로 변환하기 전에 **`inputs`**에서 이들을 제거할 것입니다(그리고 맵은 여기서 유용하지 않으므로 저장하지 않을 것입니다):
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+torch.Size([2, 384])
+```
+
+긴 컨텍스트는 두 개로 분할되었으므로, 모델을 통과한 후에는 두 세트의 시작 및 끝 로짓이 있을 것입니다:
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+이전과 마찬가지로, 먼저 소프트맥스를 취하기 전에 컨텍스트의 일부가 아닌 토큰을 마스킹합니다. 또한 (어텐션 마스크로 플래그가 지정된) 모든 패딩 토큰을 마스킹합니다:
+
+```py
+sequence_ids = inputs.sequence_ids()
+# 컨텍스트의 토큰을 제외한 모든 것을 마스킹
+mask = [i != 1 for i in sequence_ids]
+# [CLS] 토큰 마스킹 해제
+mask[0] = False
+# 모든 [PAD] 토큰 마스킹
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+그런 다음 소프트맥스를 사용하여 로짓을 확률로 변환할 수 있습니다:
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+다음 단계는 작은 컨텍스트에 대해 했던 것과 유사하지만, 두 청크 각각에 대해 반복합니다. 가능한 모든 답변 범위에 점수를 할당한 다음, 가장 좋은 점수를 가진 범위를 취합니다:
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+이 두 후보는 모델이 각 청크에서 찾을 수 있었던 최상의 답변에 해당합니다. 모델은 정답이 두 번째 부분에 있을 것이라고 훨씬 더 확신합니다(이는 좋은 징조입니다!). 이제 해당 두 토큰 범위를 컨텍스트의 문자 범위로 매핑하기만 하면 됩니다(답변을 얻으려면 두 번째 범위만 매핑하면 되지만, 모델이 첫 번째 청크에서 무엇을 선택했는지 보는 것은 흥미롭습니다).
+
+<Tip>
+
+✏️ **직접 해보세요!** 위의 코드를 수정하여 가장 가능성이 높은 다섯 가지 답변에 대한 점수와 범위를 반환하도록 하십시오(총계에 대해, 청크별이 아님).
+
+</Tip>
+
+우리가 이전에 가져온 **`offsets`**는 실제로 오프셋 목록이며, 텍스트 청크당 하나의 목록이 있습니다:
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+첫 번째 결과를 무시하면, 이 긴 컨텍스트에 대해 파이프라인과 동일한 결과를 얻습니다. 야호!
+
+<Tip>
+
+✏️ **직접 해보세요!** 이전에 계산한 가장 좋은 점수를 사용하여 가장 가능성이 높은 다섯 가지 답변을 표시하십시오(전체 컨텍스트에 대해, 각 청크에 대해서가 아님). 결과를 확인하려면 첫 번째 파이프라인으로 돌아가서 호출할 때 **`top_k=5`**를 전달하십시오.
+
+</Tip>
+
+이것으로 토크나이저의 기능에 대한 심층적인 내용이 끝납니다. 다음 챕터에서는 일반적인 NLP 작업 범위에서 모델을 미세 조정하는 방법을 보여줄 때 이 모든 것을 다시 연습할 것입니다.
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter6/3b.mdx" />
