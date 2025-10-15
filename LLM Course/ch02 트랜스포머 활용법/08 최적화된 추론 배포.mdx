@@ -1,0 +1,860 @@
+# 최적화된 추론 배포 (Optimized Inference Deployment)
+
+이번 섹션에서는 LLM 배포를 최적화하기 위한 고급 프레임워크인 **TGI (Text Generation Inference)**, **vLLM**, 그리고 **llama.cpp**를 탐색할 것입니다. 이러한 애플리케이션들은 주로 프로덕션 환경에서 사용자에게 LLM을 서비스하기 위해 사용됩니다. 이 섹션은 단일 머신에서 추론에 사용하는 방법보다는, 이러한 프레임워크를 프로덕션에 배포하는 방법에 중점을 둡니다.
+
+우리는 이러한 도구들이 어떻게 추론 효율성을 극대화하고 대규모 언어 모델의 프로덕션 배포를 단순화하는지 다룰 것입니다.
+
+## 프레임워크 선택 가이드 (Framework Selection Guide)
+
+TGI, vLLM, 및 llama.cpp는 유사한 목적을 수행하지만, 서로 다른 사용 사례에 더 적합하게 만드는 뚜렷한 특징들을 가지고 있습니다. 성능과 통합에 중점을 두어 이들 간의 주요 차이점을 살펴보겠습니다.
+
+### 메모리 관리 및 성능 (Memory Management and Performance)
+
+**TGI**는 프로덕션 환경에서 안정적이고 예측 가능하도록 설계되었으며, 메모리 사용량을 일관되게 유지하기 위해 고정된 시퀀스 길이를 사용합니다. TGI는 **Flash Attention 2**와 **지속적 배치(continuous batching)** 기술을 사용하여 메모리를 관리합니다. 이는 어텐션 계산을 매우 효율적으로 처리하고, 지속적으로 작업을 공급하여 GPU를 바쁘게 유지한다는 것을 의미합니다. 이 시스템은 필요할 때 모델의 일부를 CPU와 GPU 간에 이동할 수 있어 더 큰 모델을 처리하는 데 도움이 됩니다.
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
+
+<Tip title="Flash Attention 작동 방식 (How Flash Attention Works)">
+
+Flash Attention은 메모리 대역폭 병목 현상을 해결하여 트랜스포머 모델의 어텐션 메커니즘을 최적화하는 기술입니다. [Chapter 1.8](/course/chapter1/8)에서 이전에 논의된 바와 같이, 어텐션 메커니즘은 이차 복잡성과 메모리 사용량을 가지므로 긴 시퀀스에 대해 비효율적입니다.
+
+핵심 혁신은 고대역폭 메모리(HBM)와 더 빠른 SRAM 캐시 간의 메모리 전송을 관리하는 방식에 있습니다. 전통적인 어텐션은 HBM과 SRAM 사이에서 데이터를 반복적으로 전송하여 GPU를 유휴 상태로 두는 병목 현상을 만듭니다. Flash Attention은 데이터를 SRAM으로 한 번 로드하고 모든 계산을 거기서 수행하여 비용이 많이 드는 메모리 전송을 최소화합니다.
+
+이점은 훈련 중에 가장 중요하지만, Flash Attention의 감소된 VRAM 사용량과 향상된 효율성은 추론에도 가치가 있어 더 빠르고 확장 가능한 LLM 서비스를 가능하게 합니다.
+
+</Tip>
+
+**vLLM**은 **PagedAttention**을 사용하여 다른 접근 방식을 취합니다. 컴퓨터가 페이지 단위로 메모리를 관리하는 방식과 마찬가지로, vLLM은 모델의 메모리를 더 작은 블록으로 나눕니다. 이 영리한 시스템은 다양한 크기의 요청을 더 유연하게 처리할 수 있으며 메모리 공간을 낭비하지 않습니다. 특히 서로 다른 요청 간에 메모리를 공유하는 데 능숙하며 메모리 단편화를 줄여 전체 시스템을 더 효율적으로 만듭니다.
+
+<Tip title="PagedAttention 작동 방식 (How PagedAttention Works)">
+
+PagedAttention은 LLM 추론의 또 다른 중요한 병목 현상인 **KV 캐시 메모리 관리**를 해결하는 기술입니다. [Chapter 1.8](/course/chapter1/8)에서 논의된 바와 같이, 텍스트 생성 중에 모델은 중복 계산을 줄이기 위해 생성된 각 토큰에 대한 어텐션 키와 값(KV 캐시)을 저장합니다. KV 캐시는 특히 긴 시퀀스나 여러 동시 요청의 경우 엄청나게 커질 수 있습니다.
+
+vLLM의 핵심 혁신은 이 캐시를 관리하는 방식에 있습니다:
+
+1. **메모리 페이징 (Memory Paging)**: KV 캐시를 하나의 큰 블록으로 취급하는 대신, 고정된 크기의 "페이지"(운영 체제의 가상 메모리와 유사)로 나뉩니다.
+2. **비연속 저장 (Non-contiguous Storage)**: 페이지는 GPU 메모리에 연속적으로 저장될 필요가 없어 더 유연한 메모리 할당이 가능합니다.
+3. **페이지 테이블 관리 (Page Table Management)**: 페이지 테이블은 어떤 페이지가 어떤 시퀀스에 속하는지 추적하여 효율적인 조회 및 접근을 가능하게 합니다.
+4. **메모리 공유 (Memory Sharing)**: 병렬 샘플링과 같은 작업을 위해, 프롬프트에 대한 KV 캐시를 저장하는 페이지를 여러 시퀀스에 걸쳐 공유할 수 있습니다.
+
+PagedAttention 접근 방식은 전통적인 방법에 비해 최대 24배 더 높은 처리량(throughput)을 가져올 수 있으며, 프로덕션 LLM 배포를 위한 혁신적인 기술입니다. PagedAttention이 실제로 어떻게 작동하는지에 대해 깊이 있게 알고 싶다면, [vLLM 문서의 가이드](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html)를 읽어보실 수 있습니다.
+
+</Tip>
+
+**llama.cpp**는 원래 소비자 하드웨어에서 LLaMA 모델을 실행하기 위해 설계된 고도로 최적화된 C/C++ 구현입니다. 이는 **CPU 효율성**에 중점을 두며 선택적 GPU 가속을 지원하고, 리소스가 제한된 환경에 이상적입니다. llama.cpp는 모델 크기와 메모리 요구 사항을 줄이는 동시에 우수한 성능을 유지하기 위해 **양자화(quantization)** 기술을 사용합니다. 이는 다양한 CPU 아키텍처에 최적화된 커널을 구현하고 효율적인 토큰 생성을 위한 기본적인 KV 캐시 관리를 지원합니다.
+
+<Tip title="llama.cpp 양자화 작동 방식 (How llama.cpp Quantization Works)">
+
+llama.cpp의 양자화는 모델 가중치의 정밀도를 32비트 또는 16비트 부동 소수점에서 8비트 정수(INT8), 4비트 또는 그 이하와 같은 낮은 정밀도 형식으로 줄입니다. 이는 최소한의 품질 손실로 메모리 사용량을 크게 줄이고 추론 속도를 향상시킵니다.
+
+llama.cpp의 주요 양자화 기능은 다음과 같습니다:
+1. **다중 양자화 수준 (Multiple Quantization Levels)**: 8비트, 4비트, 3비트, 심지어 2비트 양자화를 지원합니다.
+2. **GGML/GGUF 형식 (GGML/GGUF Format)**: 양자화된 추론에 최적화된 사용자 정의 텐서 형식을 사용합니다.
+3. **혼합 정밀도 (Mixed Precision)**: 모델의 다른 부분에 다른 양자화 수준을 적용할 수 있습니다.
+4. **하드웨어별 최적화 (Hardware-Specific Optimizations)**: 다양한 CPU 아키텍처(AVX2, AVX-512, NEON)에 대한 최적화된 코드 경로를 포함합니다.
+
+이러한 접근 방식은 메모리가 제한된 소비자 하드웨어에서 수십억 개의 매개변수 모델을 실행할 수 있게 하여, 로컬 배포 및 엣지 장치에 완벽하게 만듭니다.
+
+</Tip>
+
+### 배포 및 통합 (Deployment and Integration)
+
+이제 프레임워크 간의 배포 및 통합 차이점으로 넘어가겠습니다.
+
+**TGI**는 프로덕션 준비가 된 기능으로 엔터프라이즈 수준의 배포에서 탁월합니다. 이는 **내장된 Kubernetes 지원**과 Prometheus 및 Grafana를 통한 모니터링, 자동 스케일링, 포괄적인 안전 기능과 같이 프로덕션에서 실행하는 데 필요한 모든 것을 포함합니다. 이 시스템은 또한 엔터프라이즈급 로깅과 콘텐츠 필터링 및 속도 제한과 같은 다양한 보호 조치를 포함하여 배포를 안전하고 안정적으로 유지합니다.
+
+**vLLM**은 배포에 대해 더 유연하고 개발자 친화적인 접근 방식을 취합니다. **Python**을 핵심으로 구축되었으며 기존 애플리케이션에서 OpenAI의 API를 쉽게 대체할 수 있습니다. 이 프레임워크는 원시 성능을 제공하는 데 중점을 두며 특정 요구 사항에 맞게 사용자 정의할 수 있습니다. **Ray**와 함께 특히 잘 작동하여 클러스터를 관리하므로 높은 성능과 적응성이 필요할 때 훌륭한 선택입니다.
+
+**llama.cpp**는 단순성과 이식성을 우선시합니다. 해당 서버 구현은 경량이며 강력한 서버부터 소비자용 노트북, 심지어 일부 하이엔드 모바일 장치에 이르기까지 광범위한 하드웨어에서 실행될 수 있습니다. 최소한의 종속성과 간단한 C/C++ 코어를 통해 Python 프레임워크를 설치하기 어려운 환경에 배포하기 쉽습니다. 이 서버는 다른 솔루션보다 훨씬 작은 리소스 공간을 유지하면서 **OpenAI 호환 API**를 제공합니다.
+
+## 시작하기 (Getting Started)
+
+이제 LLM을 배포하기 위해 이러한 프레임워크를 사용하는 방법을 설치 및 기본 설정부터 살펴보겠습니다.
+
+### 설치 및 기본 설정 (Installation and Basic Setup)
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI는 설치 및 사용이 쉬우며, Hugging Face 생태계에 깊이 통합되어 있습니다.
+
+먼저, Docker를 사용하여 TGI 서버를 실행합니다:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+그런 다음 Hugging Face의 InferenceClient를 사용하여 상호 작용합니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+# TGI 엔드포인트를 가리키도록 클라이언트 초기화
+client = InferenceClient(
+    model="http://localhost:8080",  # TGI 서버 URL
+)
+
+# 텍스트 생성
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+# 채팅 형식
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+또는 OpenAI 클라이언트를 사용할 수도 있습니다:
+
+```python
+from openai import OpenAI
+
+# TGI 엔드포인트를 가리키도록 클라이언트 초기화
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # 반드시 /v1을 포함해야 합니다.
+    api_key="not-needed",  # TGI는 기본적으로 API 키가 필요하지 않습니다.
+)
+
+# 채팅 완성
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp는 설치 및 사용이 쉬우며, 최소한의 종속성만 필요하고 CPU와 GPU 추론을 모두 지원합니다.
+
+먼저, llama.cpp를 설치하고 빌드합니다:
+
+```sh
+# 레포지토리 클론
+git clone [https://github.com/ggerganov/llama.cpp](https://github.com/ggerganov/llama.cpp)
+cd llama.cpp
+
+# 프로젝트 빌드
+make
+
+# SmolLM2-1.7B-Instruct-GGUF 모델 다운로드
+curl -L -O [https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf)
+```
+
+그런 다음 서버를 실행합니다 (OpenAI API 호환성 포함):
+
+```sh
+# 서버 시작
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # GPU를 사용하려면 더 높은 숫자로 설정
+```
+
+Hugging Face의 InferenceClient를 사용하여 서버와 상호 작용합니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+# llama.cpp 서버를 가리키도록 클라이언트 초기화
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # llama.cpp 서버 URL
+    token="sk-no-key-required",  # llama.cpp 서버에는 이 자리 표시자가 필요합니다.
+)
+
+# 텍스트 생성
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# 채팅 형식
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+또는 OpenAI 클라이언트를 사용할 수도 있습니다:
+
+```python
+from openai import OpenAI
+
+# llama.cpp 서버를 가리키도록 클라이언트 초기화
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # llama.cpp 서버에는 이 자리 표시자가 필요합니다.
+)
+
+# 채팅 완성
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # 서버는 하나의 모델만 로드하므로 모델 식별자는 무엇이든 될 수 있습니다.
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM은 설치 및 사용이 쉬우며, OpenAI API 호환성과 네이티브 Python 인터페이스를 모두 갖추고 있습니다.
+
+먼저, vLLM OpenAI 호환 서버를 실행합니다:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+그런 다음 Hugging Face의 InferenceClient를 사용하여 상호 작용합니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+# vLLM 엔드포인트를 가리키도록 클라이언트 초기화
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # vLLM 서버 URL
+)
+
+# 텍스트 생성
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# 채팅 형식
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+또는 OpenAI 클라이언트를 사용할 수도 있습니다:
+
+```python
+from openai import OpenAI
+
+# vLLM 엔드포인트를 가리키도록 클라이언트 초기화
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM은 기본적으로 API 키가 필요하지 않습니다.
+)
+
+# 채팅 완성
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### 기본 텍스트 생성 (Basic Text Generation)
+
+프레임워크를 사용한 텍스트 생성의 예시를 살펴보겠습니다:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+먼저, 고급 매개변수를 사용하여 TGI를 배포합니다:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+유연한 텍스트 생성을 위해 InferenceClient를 사용합니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# 고급 매개변수 예시
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# 원시 텍스트 생성
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+또는 OpenAI 클라이언트를 사용합니다:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# 고급 매개변수 예시
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp의 경우, 서버를 시작할 때 고급 매개변수를 설정할 수 있습니다:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # 컨텍스트 크기
+    --threads 8 \        # 사용할 CPU 스레드 수
+    --batch-size 512 \   # 프롬프트 평가를 위한 배치 크기
+    --n-gpu-layers 0     # GPU 레이어 수 (0 = CPU 전용)
+```
+
+InferenceClient를 사용합니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# 고급 매개변수 예시
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# 직접 텍스트 생성
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+샘플링 매개변수를 제어하여 생성을 위해 OpenAI 클라이언트를 사용합니다:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# 고급 매개변수 예시
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+    top_p=0.95,  # 핵 샘플링 확률
+    frequency_penalty=0.5,  # 자주 등장하는 토큰의 반복 감소
+    presence_penalty=0.5,  # 이미 존재하는 토큰에 페널티를 주어 반복 감소
+    max_tokens=200,  # 최대 생성 길이
+)
+print(response.choices[0].message.content)
+```
+
+더 많은 제어를 위해 llama.cpp의 네이티브 라이브러리를 사용할 수도 있습니다:
+
+```python
+# 직접 모델 접근을 위해 llama-cpp-python 패키지 사용
+from llama_cpp import Llama
+
+# 모델 로드
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,  # 컨텍스트 창 크기
+    n_threads=8,  # CPU 스레드
+    n_gpu_layers=0,  # GPU 레이어 (0 = CPU 전용)
+)
+
+# 모델이 예상하는 형식에 따라 프롬프트 형식 지정
+prompt = """<|im_start|>system
+You are a creative storyteller.
+<|im_end|>
+<|im_start|>user
+Write a creative story
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# 정밀한 매개변수 제어를 통한 응답 생성
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM의 고급 사용을 위해 InferenceClient를 사용할 수 있습니다:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# 고급 매개변수 예시
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# 직접 텍스트 생성
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+OpenAI 클라이언트를 사용할 수도 있습니다:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# 고급 매개변수 예시
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+vLLM은 또한 세밀한 제어가 가능한 네이티브 Python 인터페이스를 제공합니다:
+
+```python
+from vllm import LLM, SamplingParams
+
+# 고급 매개변수로 모델 초기화
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# 샘플링 매개변수 구성
+sampling_params = SamplingParams(
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+    top_p=0.95,  # 상위 95% 확률 질량 고려
+    max_tokens=100,  # 최대 길이
+    presence_penalty=1.1,  # 반복 감소
+    frequency_penalty=1.1,  # 반복 감소
+    stop=["\n\n", "###"],  # 정지 시퀀스
+)
+
+# 텍스트 생성
+prompt = "Write a creative story"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# 채팅 스타일 상호 작용
+chat_prompt = [
+    {"role": "system", "content": "You are a creative storyteller."},
+    {"role": "user", "content": "Write a creative story"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)  # 모델의 채팅 템플릿 사용
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## 고급 생성 제어 (Advanced Generation Control)
+
+### 토큰 선택 및 샘플링 (Token Selection and Sampling)
+
+텍스트를 생성하는 과정은 각 단계에서 다음 토큰을 선택하는 것을 포함합니다. 이 선택 과정은 다양한 매개변수를 통해 제어할 수 있습니다:
+
+1. **원시 로짓 (Raw Logits)**: 각 토큰에 대한 초기 출력 확률
+2. **온도 (Temperature)**: 선택의 무작위성을 제어합니다 (높을수록 더 창의적).
+3. **Top-p (핵) 샘플링 (Top-p (Nucleus) Sampling)**: 확률 질량의 X%를 구성하는 상위 토큰으로 필터링합니다.
+4. **Top-k 필터링 (Top-k Filtering)**: k개의 가장 가능성이 높은 토큰으로 선택을 제한합니다.
+
+다음은 이러한 매개변수를 구성하는 방법입니다:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a creative story",
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+    top_p=0.95,  # 상위 95% 확률 질량 고려
+    top_k=50,  # 상위 50개 토큰 고려
+    max_new_tokens=100,  # 최대 길이
+    repetition_penalty=1.1,  # 반복 감소
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# OpenAI API 호환성을 통해
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # 모델 이름 (llama.cpp 서버의 경우 아무 문자열이나 가능)
+    prompt="Write a creative story",
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+    top_p=0.95,  # 상위 95% 확률 질량 고려
+    frequency_penalty=1.1,  # 반복 감소
+    presence_penalty=0.1,  # 반복 감소
+    max_tokens=100,  # 최대 길이
+)
+
+# llama-cpp-python 직접 접근을 통해
+output = llm(
+    "Write a creative story",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # 더 많은 창의성을 위해 더 높게
+    top_p=0.95,  # 상위 95% 확률 질량 고려
+    top_k=50,  # 상위 50개 토큰 고려
+    max_tokens=100,  # 최대 길이
+    presence_penalty=0.1,  # 반복 감소
+)
+llm.generate("Write a creative story", sampling_params=params)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### 반복 제어 (Controlling Repetition)
+
+두 프레임워크 모두 반복적인 텍스트 생성을 방지하는 방법을 제공합니다:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a varied text",
+    repetition_penalty=1.1,  # 반복되는 토큰에 페널티 부여
+    no_repeat_ngram_size=3,  # 3-gram 반복 방지
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# OpenAI API를 통해
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Write a varied text",
+    frequency_penalty=1.1,  # 자주 등장하는 토큰에 페널티 부여
+    presence_penalty=0.8,  # 이미 존재하는 토큰에 페널티 부여
+)
+
+# 직접 라이브러리를 통해
+output = llm(
+    "Write a varied text",
+    repeat_penalty=1.1,  # 반복되는 토큰에 페널티 부여
+    frequency_penalty=0.5,  # 추가적인 빈도 페널티
+    presence_penalty=0.5,  # 추가적인 존재 페널티
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # 토큰 존재에 페널티 부여
+    frequency_penalty=0.1,  # 토큰 빈도에 페널티 부여
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### 길이 제어 및 정지 시퀀스 (Length Control and Stop Sequences)
+
+생성 길이를 제어하고 언제 멈출지 지정할 수 있습니다:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Generate a short paragraph",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# OpenAI API를 통해
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# 직접 라이브러리를 통해
+output = llm("Generate a short paragraph", max_tokens=100, stop=["\n\n", "###"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## 메모리 관리 (Memory Management)
+
+두 프레임워크 모두 효율적인 추론을 위해 고급 메모리 관리 기술을 구현합니다.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI는 Flash Attention 2와 지속적 배치(continuous batching)를 사용합니다:
+
+```sh
+# 메모리 최적화를 사용한 Docker 배포
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp는 양자화 및 최적화된 메모리 레이아웃을 사용합니다:
+
+```sh
+# 메모리 최적화를 사용한 서버
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # 컨텍스트 크기
+    --threads 4 \           # CPU 스레드
+    --n-gpu-layers 32 \     # 더 큰 모델을 위해 더 많은 GPU 레이어 사용
+    --mlock \               # 스와핑 방지를 위해 메모리 잠금
+    --cont-batching         # 지속적 배치 활성화
+```
+
+GPU에 비해 너무 큰 모델의 경우, CPU 오프로드를 사용할 수 있습니다:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # 처음 20개 레이어를 GPU에 유지
+    --threads 8             # CPU 레이어를 위해 더 많은 CPU 스레드 사용
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM은 최적의 메모리 관리를 위해 PagedAttention을 사용합니다:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## 리소스 (Resources)
+
+- [Text Generation Inference 문서](https://huggingface.co/docs/text-generation-inference)
+- [TGI GitHub 저장소](https://github.com/huggingface/text-generation-inference)
+- [vLLM 문서](https://vllm.readthedocs.io/)
+- [vLLM GitHub 저장소](https://github.com/vllm-project/vllm)
+- [PagedAttention 논문](https://arxiv.org/abs/2309.06180)
+- [llama.cpp GitHub 저장소](https://github.com/ggerganov/llama.cpp)
+- [llama-cpp-python 저장소](https://github.com/abetlen/llama-cpp-python)
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter2/8.mdx" />
