@@ -1,0 +1,59 @@
+# 사전 훈련된 모델 사용하기 (Using pretrained models)
+
+Model Hub 덕분에 적절한 모델을 선택하는 것이 간단해져서, 다운스트림 라이브러리에서 모델을 사용하는 것을 몇 줄의 코드로 할 수 있습니다. 이러한 모델 중 하나를 실제로 사용하는 방법과 커뮤니티에 다시 기여하는 방법을 살펴보겠습니다.
+
+프랑스어 기반의 마스크 채우기(mask filling)를 수행할 수 있는 모델을 찾고 있다고 가정해 봅시다.
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter4/camembert.gif" alt="Selecting the Camembert model." width="80%"/>
+</div>
+
+우리는 **`camembert-base`** 체크포인트를 선택하여 시도해 볼 것입니다. **`camembert-base`**라는 식별자만 있으면 사용을 시작할 수 있습니다! 이전 챕터에서 보았듯이, **`pipeline()`** 함수를 사용하여 이를 인스턴스화할 수 있습니다:
+
+```py
+from transformers import pipeline
+
+camembert_fill_mask = pipeline("fill-mask", model="camembert-base")
+results = camembert_fill_mask("Le camembert est <mask> :)")
+```
+
+```python out
+[
+  {'sequence': 'Le camembert est délicieux :)', 'score': 0.49091005325317383, 'token': 7200, 'token_str': 'délicieux'}, 
+  {'sequence': 'Le camembert est excellent :)', 'score': 0.1055697426199913, 'token': 2183, 'token_str': 'excellent'}, 
+  {'sequence': 'Le camembert est succulent :)', 'score': 0.03453313186764717, 'token': 26202, 'token_str': 'succulent'}, 
+  {'sequence': 'Le camembert est meilleur :)', 'score': 0.0330314114689827, 'token': 528, 'token_str': 'meilleur'}, 
+  {'sequence': 'Le camembert est parfait :)', 'score': 0.03007650189101696, 'token': 1654, 'token_str': 'parfait'}
+]
+```
+
+보시다시피, 파이프라인 내에서 모델을 로드하는 것은 매우 간단합니다. 주의해야 할 유일한 점은 선택한 체크포인트가 사용될 작업에 적합해야 한다는 것입니다. 예를 들어, 여기서는 **`fill-mask`** 파이프라인에 **`camembert-base`** 체크포인트를 로드하고 있으며, 이는 전혀 문제가 없습니다. 그러나 이 체크포인트를 **`text-classification`** 파이프라인에 로드하면 **`camembert-base`**의 헤드가 이 작업에 적합하지 않기 때문에 결과가 전혀 의미가 없을 것입니다! 적절한 체크포인트를 선택하기 위해 Hugging Face Hub 인터페이스의 작업 선택기를 사용하는 것을 권장합니다:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter4/tasks.png" alt="The task selector on the web interface." width="80%"/>
+</div>
+
+모델 아키텍처를 직접 사용하여 체크포인트를 인스턴스화할 수도 있습니다:
+
+```py
+from transformers import CamembertTokenizer, CamembertForMaskedLM
+
+tokenizer = CamembertTokenizer.from_pretrained("camembert-base")
+model = CamembertForMaskedLM.from_pretrained("camembert-base")
+```
+
+하지만, 이러한 클래스는 설계상 아키텍처에 구애받지 않기 때문에 대신 **`Auto*` 클래스**를 사용하는 것을 권장합니다. 이전 코드 샘플은 사용자를 CamemBERT 아키텍처에 로드할 수 있는 체크포인트로 제한하지만, **`Auto*` 클래스**를 사용하면 체크포인트를 쉽게 전환할 수 있습니다:
+
+```py
+from transformers import AutoTokenizer, AutoModelForMaskedLM
+
+tokenizer = AutoTokenizer.from_pretrained("camembert-base")
+model = AutoModelForMaskedLM.from_pretrained("camembert-base")
+```
+
+<Tip>
+사전 훈련된 모델을 사용할 때는 모델이 어떻게 훈련되었는지, 어떤 데이터셋으로 훈련되었는지, 한계점 및 편향을 확인해야 합니다. 이 모든 정보는 모델 카드에 표시되어야 합니다.
+</Tip>
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter4/2.mdx" />
