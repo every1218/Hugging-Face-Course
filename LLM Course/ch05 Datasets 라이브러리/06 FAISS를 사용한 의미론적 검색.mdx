@@ -1,0 +1,432 @@
+# FAISS를 이용한 시맨틱 검색 (Semantic search with FAISS)
+
+[섹션 5](/course/chapter5/5)에서 🤗 Datasets 저장소의 GitHub 이슈 및 댓글 데이터셋을 만들었습니다. 이 섹션에서는 이 정보를 사용하여 라이브러리에 대한 가장 시급한 질문에 대한 답을 찾는 데 도움이 되는 검색 엔진을 구축할 것입니다!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## 시맨틱 검색을 위한 임베딩 사용 (Using embeddings for semantic search)
+
+[챕터 1](/course/chapter1)에서 보았듯이, 트랜스포머 기반 언어 모델은 텍스트 범위의 각 토큰을 *임베딩 벡터*로 나타냅니다. 개별 임베딩을 "풀링(pool)"하여 전체 문장, 단락 또는 (일부 경우) 문서에 대한 벡터 표현을 만들 수 있습니다. 그런 다음 이러한 임베딩을 사용하여 각 임베딩과 점 곱 유사도(dot-product similarity, 또는 다른 유사도 메트릭)를 계산하고 가장 큰 겹침(overlap)이 있는 문서를 반환하여 코퍼스에서 유사한 문서를 찾을 수 있습니다.
+
+이 섹션에서는 임베딩을 사용하여 **시맨틱 검색 엔진**을 개발할 것입니다. 이러한 검색 엔진은 쿼리의 키워드를 문서와 일치시키는 기존 접근 방식보다 몇 가지 이점을 제공합니다.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Semantic search."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="Semantic search."/>
+</div>
+
+## 데이터셋 로드 및 준비 (Loading and preparing the dataset)
+
+가장 먼저 해야 할 일은 GitHub 이슈 데이터셋을 다운로드하는 것입니다. 평소처럼 **`load_dataset()`** 함수를 사용합시다:
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+여기서 **`load_dataset()`**에 기본 **`train`** 분할을 지정했으므로 **`DatasetDict`** 대신 **`Dataset`**을 반환합니다. 가장 먼저 할 일은 풀 리퀘스트를 필터링하는 것입니다. 이는 사용자 쿼리에 응답하는 데 거의 사용되지 않으며 검색 엔진에 노이즈를 유발하기 때문입니다. 이제 익숙해졌듯이, **`Dataset.filter()`** 함수를 사용하여 데이터셋에서 이러한 행을 제외할 수 있습니다. 그와 동시에, 사용자 쿼리에 대한 답변을 제공하지 않으므로 댓글이 없는 행도 필터링해 봅시다:
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+데이터셋에 많은 열이 있음을 알 수 있으며, 그 중 대부분은 검색 엔진을 구축하는 데 필요하지 않습니다. 검색 관점에서 가장 유익한 열은 **`title`**, **`body`**, 및 **`comments`**이며, **`html_url`**은 소스 이슈에 대한 링크를 제공합니다. **`Dataset.remove_columns()`** 함수를 사용하여 나머지를 삭제해 봅시다:
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+임베딩을 만들기 위해 각 댓글에 이슈의 제목과 본문을 추가할 것입니다. 이러한 필드에는 종종 유용한 **문맥 정보**가 포함되어 있기 때문입니다. **`comments`** 열은 현재 각 이슈에 대한 댓글 목록이므로, 각 행이 `(html_url, title, body, comment)` 튜플로 구성되도록 열을 "폭발(explode)"해야 합니다. Pandas에서는 [`DataFrame.explode()` 함수](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html)를 사용하여 이 작업을 수행할 수 있습니다. 이 함수는 목록과 같은 열의 각 요소에 대해 새 행을 만들고 다른 모든 열 값을 복제합니다. 이것이 실제로 작동하는 것을 보기 위해, 먼저 Pandas **`DataFrame`** 형식으로 전환해 봅시다:
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+이 **`DataFrame`**의 첫 번째 행을 검사하면 이 이슈와 관련된 4개의 댓글이 있음을 알 수 있습니다:
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: [https://raw.githubusercontent.com](https://raw.githubusercontent.com)\r\n\r\nNormally, it should work if you wait a little and then retry.\r\n\r\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access [https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py](https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py) without problem...']
+```
+
+**`df`**를 폭발시키면(explode) 이 댓글 각각에 대해 하나의 행이 생길 것으로 예상합니다. 그것이 사실인지 확인해 봅시다:
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\r\n    if data_args.task_name is not None...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+훌륭합니다. 행이 복제되었으며 **`comments`** 열에는 개별 댓글이 포함되어 있음을 알 수 있습니다! 이제 Pandas 작업을 마쳤으므로, 메모리에 **`DataFrame`**을 로드하여 **`Dataset`**으로 빠르게 다시 전환할 수 있습니다:
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+좋습니다. 이를 통해 작업할 수 있는 수천 개의 댓글을 얻었습니다!
+
+
+<Tip>
+
+✏️ **직접 해보세요!** Pandas를 사용하지 않고 **`issues_dataset`**의 **`comments`** 열을 폭발(explode)시키기 위해 **`Dataset.map()`**을 사용할 수 있는지 확인해 보세요. 이것은 약간 까다롭습니다. 이 작업에 대해 🤗 Datasets 문서의 ["배치 매핑 (Batch mapping)"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) 섹션이 유용할 수 있습니다.
+
+</Tip>
+
+이제 행당 하나의 댓글이 있으므로, 댓글당 단어 수를 포함하는 새 **`comments_length`** 열을 만들어 봅시다:
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+이 새 열을 사용하여 짧은 댓글을 필터링할 수 있습니다. 짧은 댓글은 일반적으로 검색 엔진과 관련이 없는 "cc @lewtun" 또는 "Thanks!"와 같은 것들을 포함합니다. 필터에 대해 선택할 정확한 숫자는 없지만, 약 15단어가 좋은 시작으로 보입니다:
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+데이터셋을 약간 정리했으므로, 이슈 제목, 설명 및 댓글을 새 **`text`** 열에 연결해 봅시다. 평소처럼, **`Dataset.map()`**에 전달할 수 있는 간단한 함수를 작성할 것입니다:
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+드디어 임베딩을 만들 준비가 되었습니다! 살펴봅시다.
+
+## 텍스트 임베딩 생성하기 (Creating text embeddings)
+
+[챕터 2](/course/chapter2)에서 **`AutoModel`** 클래스를 사용하여 토큰 임베딩을 얻을 수 있음을 보았습니다. 우리가 해야 할 일은 모델을 로드할 적절한 체크포인트를 선택하는 것입니다. 다행히 임베딩 생성 전용인 **`sentence-transformers`**라는 라이브러리가 있습니다. 라이브러리의 [문서](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search)에 설명된 대로, 우리의 사용 사례는 짧은 쿼리가 있고 그 답변을 이슈 댓글과 같은 더 긴 문서에서 찾고자 하는 *비대칭 시맨틱 검색(asymmetric semantic search)*의 예입니다. 문서의 편리한 [모델 개요 테이블](https://www.sbert.net/docs/pretrained_models.html#model-overview)은 **`multi-qa-mpnet-base-dot-v1`** 체크포인트가 시맨틱 검색에 대한 최상의 성능을 가지고 있음을 나타내므로, 이 체크포인트를 애플리케이션에 사용할 것입니다. 또한 동일한 체크포인트를 사용하여 토크나이저를 로드할 것입니다:
+
+```py
+from transformers import AutoTokenizer, AutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+```
+
+임베딩 프로세스 속도를 높이기 위해 모델과 입력을 GPU 장치에 배치하는 것이 도움이 되므로, 지금 바로 그렇게 합시다:
+
+```py
+import torch
+
+device = torch.device("cuda")
+model.to(device)
+```
+
+이전에 언급했듯이, GitHub 이슈 코퍼스의 각 항목을 단일 벡터로 나타내고자 하므로, 토큰 임베딩을 어떤 방식으로든 "풀링"하거나 평균화해야 합니다. 한 가지 인기 있는 접근 방식은 모델 출력에 **CLS 풀링**을 수행하는 것입니다. 여기서 특별한 **`[CLS]`** 토큰에 대한 마지막 은닉 상태를 수집합니다. 다음 함수가 우리를 위해 이 트릭을 수행합니다:
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+```
+
+다음으로, 텍스트 목록을 토큰화하고, 텐서를 GPU에 배치하고, 모델에 공급하고, 마지막으로 출력에 CLS 풀링을 적용하는 도우미 함수를 만들 것입니다:
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+코퍼스의 첫 번째 텍스트 항목을 공급하고 출력 모양을 검사하여 함수가 작동하는지 테스트할 수 있습니다:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+훌륭합니다. 코퍼스의 첫 번째 항목을 768차원 벡터로 변환했습니다! **`Dataset.map()`**을 사용하여 **`get_embeddings()`** 함수를 코퍼스의 각 행에 적용할 수 있으므로, 다음과 같이 새 **`embeddings`** 열을 만들어 봅시다:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+우리가 임베딩을 NumPy 배열로 변환했다는 점에 유의하십시오. 이는 다음으로 수행할 FAISS로 임베딩을 인덱싱하려고 할 때 🤗 Datasets가 이 형식을 요구하기 때문입니다.
+
+
+## 효율적인 유사도 검색을 위한 FAISS 사용 (Using FAISS for efficient similarity search)
+
+이제 임베딩 데이터셋이 있으므로, 이를 검색할 방법이 필요합니다. 이를 위해 🤗 Datasets의 *FAISS 인덱스*라는 특수 데이터 구조를 사용할 것입니다. [FAISS](https://faiss.ai/) (Facebook AI Similarity Search의 약자)는 임베딩 벡터를 빠르게 검색하고 클러스터링하기 위한 효율적인 알고리즘을 제공하는 라이브러리입니다.
+
+FAISS의 기본 아이디어는 입력 임베딩과 유사한 임베딩을 찾을 수 있도록 하는 *인덱스*라는 특수 데이터 구조를 만드는 것입니다. 🤗 Datasets에서 FAISS 인덱스를 만드는 것은 간단합니다. **`Dataset.add_faiss_index()`** 함수를 사용하고 데이터셋의 어떤 열을 인덱싱할지 지정합니다:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+이제 **`Dataset.get_nearest_examples()`** 함수를 사용하여 최근접 이웃 조회를 수행하여 이 인덱스에 대한 쿼리를 수행할 수 있습니다. 다음과 같이 질문을 먼저 임베딩하여 테스트해 봅시다:
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+문서에서와 마찬가지로, 이제 쿼리를 나타내는 768차원 벡터가 있으며, 이를 전체 코퍼스와 비교하여 가장 유사한 임베딩을 찾을 수 있습니다:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+**`Dataset.get_nearest_examples()`** 함수는 쿼리와 문서 간의 겹침을 순위 지정하는 점수와 해당 샘플 세트(여기서는 가장 일치하는 5개)의 튜플을 반환합니다. 이들을 **`pandas.DataFrame`**에 수집하여 쉽게 정렬할 수 있습니다:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+이제 처음 몇 행을 반복하여 쿼리가 사용 가능한 댓글과 얼마나 잘 일치하는지 확인할 수 있습니다:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+"""
+COMMENT: Requiring online connection is a deal breaker in some cases unfortunately so it'd be great if offline mode is added similar to how `transformers` loads models offline fine.
+
+@mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: [https://github.com/huggingface/datasets/issues/824](https://github.com/huggingface/datasets/issues/824)
+==================================================
+
+COMMENT: The local dataset builders (csv, text , json and pandas) are now part of the `datasets` package since #1726 :)
+You can now use them offline
+\`\`\`python
+datasets = load_dataset("text", data_files=data_files)
+\`\`\`
+
+We'll do a new release soon
+SCORE: 24.555509567260742
+TITLE: Discussion using datasets in offline mode
+URL: [https://github.com/huggingface/datasets/issues/824](https://github.com/huggingface/datasets/issues/824)
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once even if there's no internet.
+
+Let me know if you know other ways that can make the offline mode experience better. I'd be happy to add them :)
+
+I already note the "freeze" modules option, to prevent local modules updates. It would be a cool feature.
+
+----------
+
+> @mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+
+Indeed `load_dataset` allows to load remote dataset script (squad, glue, etc.) but also you own local ones.
+For example if you have a dataset script at `./my_dataset/my_dataset.py` then you can do
+\`\`\`python
+load_dataset("./my_dataset")
+\`\`\`
+and the dataset script will generate your dataset once and for all.
+
+----------
+
+About I'm looking into having `csv`, `json`, `text`, `pandas` dataset builders already included in the `datasets` package, so that they are available offline by default, as opposed to the other datasets that require the script to be downloaded.
+cf #1724
+SCORE: 24.14896583557129
+TITLE: Discussion using datasets in offline mode
+URL: [https://github.com/huggingface/datasets/issues/824](https://github.com/huggingface/datasets/issues/824)
+==================================================
+
+COMMENT: > here is my way to load a dataset offline, but it **requires** an online machine
+>
+> 1. (online machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_dataset(...)
+>
+> data.save_to_disk(/YOUR/DATASET/DIR)
+>
+> ```
+>
+> 2. copy the dir from online to the offline machine
+>
+> 3. (offline machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_from_disk(/SAVED/DATA/DIR)
+>
+> ```
+>
+>
+>
+> HTH.
+
+
+SCORE: 22.893993377685547
+TITLE: Discussion using datasets in offline mode
+URL: [https://github.com/huggingface/datasets/issues/824](https://github.com/huggingface/datasets/issues/824)
+==================================================
+
+COMMENT: here is my way to load a dataset offline, but it **requires** an online machine
+1. (online machine)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. copy the dir from online to the offline machine
+3. (offline machine)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+HTH.
+SCORE: 22.406635284423828
+TITLE: Discussion using datasets in offline mode
+URL: [https://github.com/huggingface/datasets/issues/824](https://github.com/huggingface/datasets/issues/824)
+==================================================
+"""
+```
+
+나쁘지 않습니다! 우리의 두 번째 히트는 쿼리와 일치하는 것 같습니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** 자신만의 쿼리를 만들고 검색된 문서에서 답변을 찾을 수 있는지 확인해 보세요. 검색을 넓히기 위해 **`Dataset.get_nearest_examples()`**의 **`k`** 매개변수를 늘려야 할 수도 있습니다.
+
+</Tip>
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter5/6.mdx" />
