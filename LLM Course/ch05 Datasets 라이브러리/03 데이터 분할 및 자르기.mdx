@@ -1,0 +1,383 @@
+# 데이터를 분할하고 주사위처럼 자르기 (Time to slice and dice)
+
+대부분의 경우, 작업하는 데이터는 모델 훈련을 위해 완벽하게 준비되어 있지 않을 것입니다. 이 섹션에서는 🤗 Datasets가 데이터셋을 정리하기 위해 제공하는 다양한 기능을 탐색할 것입니다.
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## 데이터 분할 및 자르기 (Slicing and dicing our data)
+
+Pandas와 유사하게, 🤗 Datasets는 **`Dataset`** 및 **`DatasetDict`** 객체의 내용을 조작하기 위한 여러 함수를 제공합니다. 우리는 [챕터 3](/course/chapter3)에서 **`Dataset.map()`** 메서드를 이미 접했으며, 이 섹션에서는 사용할 수 있는 다른 함수들을 탐색할 것입니다.
+
+이 예시에서는 [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php)에 호스팅된 [Drug Review Dataset](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29)을 사용할 것입니다. 이 데이터셋에는 치료 중인 상태와 환자의 만족도에 대한 10점 별점 등급과 함께 다양한 약물에 대한 환자 리뷰가 포함되어 있습니다.
+
+먼저 `wget` 및 `unzip` 명령을 사용하여 데이터를 다운로드하고 압축을 해제해야 합니다:
+
+```py
+!wget "[https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip](https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip)"
+!unzip drugsCom_raw.zip
+```
+
+TSV는 구분 기호로 쉼표 대신 탭을 사용하는 CSV의 변형에 불과하므로, **`csv`** 로딩 스크립트를 사용하고 **`load_dataset()`** 함수에서 **`delimiter`** 인수를 다음과 같이 지정하여 이 파일들을 로드할 수 있습니다:
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t는 Python의 탭 문자입니다.
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+모든 종류의 데이터 분석을 수행할 때 좋은 관행은 작업 중인 데이터 유형에 대한 빠른 감각을 얻기 위해 작은 무작위 샘플을 가져오는 것입니다. 🤗 Datasets에서는 **`Dataset.shuffle()`** 및 **`Dataset.select()`** 함수를 함께 연결하여 무작위 샘플을 만들 수 있습니다:
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# 처음 몇 가지 예시를 봅니다.
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+재현성을 위해 **`Dataset.shuffle()`**에서 시드를 고정했다는 점에 유의하십시오. **`Dataset.select()`**는 인덱스의 반복 가능 항목을 예상하므로, 셔플된 데이터셋에서 처음 1,000개의 예시를 가져오기 위해 **`range(1000)`**을 전달했습니다. 이 샘플에서 이미 데이터셋의 몇 가지 특이점을 볼 수 있습니다:
+
+* **`Unnamed: 0`** 열은 각 환자에 대한 익명 ID와 의심스러울 정도로 유사해 보입니다.
+* **`condition`** 열에는 대문자와 소문자 레이블이 혼합되어 있습니다.
+* 리뷰는 길이가 다양하며 Python 줄 구분 기호(**`\r\n`**)와 **`&\#039;`**와 같은 HTML 문자 코드가 혼합되어 있습니다.
+
+🤗 Datasets를 사용하여 이러한 각 문제를 처리하는 방법을 살펴보겠습니다. **`Unnamed: 0`** 열에 대한 환자 ID 가설을 테스트하기 위해, **`Dataset.unique()`** 함수를 사용하여 ID 수가 각 분할의 행 수와 일치하는지 확인할 수 있습니다:
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+이것은 우리의 가설을 확인하는 것처럼 보입니다. 이제 **`Unnamed: 0`** 열의 이름을 좀 더 해석하기 쉬운 것으로 변경하여 데이터셋을 약간 정리해 봅시다. **`DatasetDict.rename_column()`** 함수를 사용하여 한 번에 두 분할 모두에서 열 이름을 바꿀 수 있습니다:
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+<Tip>
+
+✏️ **직접 해보세요!** **`Dataset.unique()`** 함수를 사용하여 훈련 및 테스트 세트에서 고유한 약물 및 상태의 수를 찾으십시오.
+
+</Tip>
+
+다음으로, **`Dataset.map()`**을 사용하여 모든 **`condition`** 레이블을 정규화해 봅시다. [챕터 3](/course/chapter3)에서 토큰화할 때 했던 것처럼, **`drug_dataset`**의 각 분할의 모든 행에 적용할 수 있는 간단한 함수를 정의할 수 있습니다:
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+오, 맙소사, 맵 함수에 문제가 발생했습니다! 오류에서 **`condition`** 열의 일부 항목이 **`None`**이며, 이는 문자열이 아니므로 소문자로 변환할 수 없음을 추론할 수 있습니다. **`Dataset.filter()`**를 사용하여 이러한 행을 삭제해 봅시다. **`Dataset.map()`**과 유사하게 작동하며 데이터셋의 단일 예제를 받는 함수를 예상합니다. 다음과 같이 명시적인 함수를 작성하는 대신:
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+그리고 **`drug_dataset.filter(filter_nones)`**를 실행하는 대신, *람다 함수*를 사용하여 한 줄로 이 작업을 수행할 수 있습니다. Python에서 람다 함수는 명시적으로 이름을 지정하지 않고 정의할 수 있는 작은 함수입니다. 다음과 같은 일반적인 형식을 취합니다:
+
+```
+lambda <arguments> : <expression>
+```
+
+여기서 **`lambda`**는 Python의 특수 [키워드](https://docs.python.org/3/reference/lexical_analysis.html#keywords) 중 하나이고, **`<arguments>`**는 함수의 입력을 정의하는 쉼표로 구분된 값의 목록/세트이며, **`<expression>`**은 실행하려는 작업을 나타냅니다. 예를 들어, 숫자를 제곱하는 간단한 람다 함수를 다음과 같이 정의할 수 있습니다:
+
+```
+lambda x : x * x
+```
+
+이 함수를 입력에 적용하려면 함수와 입력을 괄호로 묶어야 합니다:
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+마찬가지로, 쉼표로 구분하여 여러 인수를 가진 람다 함수를 정의할 수 있습니다. 예를 들어, 삼각형의 면적을 다음과 같이 계산할 수 있습니다:
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+람다 함수는 작고 단일 용도의 함수를 정의할 때 유용합니다(이에 대한 자세한 내용은 Andre Burgaud의 훌륭한 [Real Python 튜토리얼](https://realpython.com/python-lambda/)을 읽어보는 것을 권장합니다). 🤗 Datasets 컨텍스트에서 람다 함수를 사용하여 간단한 맵 및 필터 작업을 정의할 수 있으므로, 이 트릭을 사용하여 데이터셋의 **`None`** 항목을 제거해 봅시다:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+**`None`** 항목이 제거되었으므로, **`condition`** 열을 정규화할 수 있습니다:
+
+```py
+drug_dataset = drug_dataset.map(lowercase_condition)
+# 소문자 변환이 작동했는지 확인
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+작동합니다! 이제 레이블을 정리했으므로, 리뷰 자체를 정리하는 방법을 살펴보겠습니다.
+
+## 새 열 생성하기 (Creating new columns)
+
+고객 리뷰를 다룰 때마다 좋은 관행은 각 리뷰의 단어 수를 확인하는 것입니다. 리뷰는 "Great!"와 같은 단일 단어일 수도 있고, 수천 단어로 된 본격적인 에세이일 수도 있으며, 사용 사례에 따라 이러한 극단적인 상황을 다르게 처리해야 합니다. 각 리뷰의 단어 수를 계산하기 위해, 각 텍스트를 공백으로 분할하는 것을 기반으로 하는 대략적인 발견적 방법(rough heuristic)을 사용할 것입니다.
+
+각 리뷰의 단어 수를 세는 간단한 함수를 정의해 봅시다:
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+**`lowercase_condition()`** 함수와 달리, **`compute_review_length()`**는 데이터셋의 열 이름 중 하나와 일치하지 않는 키를 가진 딕셔너리를 반환합니다. 이 경우, **`compute_review_length()`**가 **`Dataset.map()`**에 전달되면, 새 **`review_length`** 열을 만들기 위해 데이터셋의 모든 행에 적용됩니다:
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# 첫 번째 훈련 예시 검사
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+예상대로, 훈련 세트에 **`review_length`** 열이 추가된 것을 볼 수 있습니다. **`Dataset.sort()`**로 이 새 열을 정렬하여 극단적인 값이 어떻게 보이는지 확인할 수 있습니다:
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+우리가 예상했듯이, 일부 리뷰에는 단 하나의 단어만 포함되어 있으며, 이는 감성 분석에는 괜찮을 수 있지만, 상태를 예측하려는 경우에는 유익하지 않을 것입니다.
+
+<Tip>
+
+🙋 데이터셋에 새 열을 추가하는 또 다른 방법은 **`Dataset.add_column()`** 함수를 사용하는 것입니다. 이를 통해 열을 Python 목록 또는 NumPy 배열로 제공할 수 있으며, **`Dataset.map()`**이 분석에 적합하지 않은 상황에서 유용할 수 있습니다.
+
+</Tip>
+
+**`Dataset.filter()`** 함수를 사용하여 30단어 미만의 리뷰를 제거해 봅시다. **`condition`** 열에서 했던 것과 유사하게, 리뷰 길이가 이 임계값보다 크도록 요구하여 매우 짧은 리뷰를 필터링할 수 있습니다:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+보시다시피, 이것은 원래 훈련 및 테스트 세트에서 약 15%의 리뷰를 제거했습니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** **`Dataset.sort()`** 함수를 사용하여 가장 많은 단어 수를 가진 리뷰를 검사하십시오. 리뷰를 길이 역순으로 정렬하는 데 사용해야 하는 인수가 무엇인지 확인하려면 [문서](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort)를 참조하십시오.
+
+</Tip>
+
+우리가 처리해야 할 마지막 문제는 리뷰에 HTML 문자 코드가 있다는 것입니다. Python의 **`html`** 모듈을 사용하여 다음과 같이 이러한 문자를 이스케이프 해제(unescape)할 수 있습니다:
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+**`Dataset.map()`**을 사용하여 코퍼스의 모든 HTML 문자를 이스케이프 해제할 것입니다:
+
+```python
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+보시다시피, **`Dataset.map()`** 메서드는 데이터를 처리하는 데 매우 유용하며, 우리는 이 메서드가 할 수 있는 모든 것을 아직 다루지도 않았습니다!
+
+## `map()` 메서드의 초능력 (The `map()` method's superpowers)
+
+**`Dataset.map()`** 메서드는 **`batched`** 인수를 받는데, 이 인수를 **`True`**로 설정하면 한 번에 예제 배치를 맵 함수로 보냅니다(배치 크기는 구성 가능하지만 기본값은 1,000입니다). 예를 들어, 모든 HTML을 이스케이프 해제한 이전 맵 함수는 실행하는 데 시간이 조금 걸렸습니다(진행률 표시줄에서 걸린 시간을 읽을 수 있습니다). 목록 이해(list comprehension)를 사용하여 한 번에 여러 요소를 처리하여 이 속도를 높일 수 있습니다.
+
+**`batched=True`**를 지정하면 함수는 데이터셋의 필드가 포함된 딕셔너리를 받지만, 각 값은 이제 단일 값이 아니라 *값의 목록*입니다. **`Dataset.map()`**의 반환 값은 동일해야 합니다. 업데이트하거나 데이터셋에 추가하려는 필드가 포함된 딕셔너리와 값 목록입니다. 예를 들어, **`batched=True`**를 사용하여 모든 HTML 문자를 이스케이프 해제하는 또 다른 방법은 다음과 같습니다:
+
+```python
+new_drug_dataset = drug_dataset.map(
+    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
+)
+```
+
+노트북에서 이 코드를 실행하면 이전 코드보다 훨씬 빠르게 실행되는 것을 볼 수 있습니다. 그리고 이는 리뷰가 이미 HTML 이스케이프 해제되었기 때문이 아닙니다. 이전 섹션의 명령( **`batched=True`** 없이)을 다시 실행하면 이전과 동일한 시간이 걸릴 것입니다. 이는 목록 이해가 일반적으로 `for` 루프에서 동일한 코드를 실행하는 것보다 빠르며, 한 번에 하나씩이 아니라 많은 요소에 동시에 접근하여 성능을 얻기 때문입니다.
+
+**`batched=True`**와 함께 **`Dataset.map()`**을 사용하는 것은 [챕터 6](/course/chapter6)에서 접하게 될 "빠른" 토크나이저의 속도를 활용하는 데 필수적이며, 이는 큰 텍스트 목록을 빠르게 토큰화할 수 있습니다. 예를 들어, 빠른 토크나이저로 모든 약물 리뷰를 토큰화하려면 다음과 같은 함수를 사용할 수 있습니다:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+[챕터 3](/course/chapter3)에서 보았듯이, 토크나이저에 하나 또는 여러 개의 예제를 전달할 수 있으므로, **`batched=True`**와 함께 또는 없이 이 함수를 사용할 수 있습니다. 이 기회를 통해 다양한 옵션의 성능을 비교해 봅시다. 노트북에서는 측정하려는 코드 줄 앞에 **`%time`**을 추가하여 한 줄 명령의 시간을 측정할 수 있습니다:
+
+```python no-format
+%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+셀 시작 부분에 **`%%time`**을 넣어 전체 셀의 시간을 측정할 수도 있습니다. 우리가 이 명령을 실행한 하드웨어에서는 10.8초가 걸렸습니다("Wall time" 뒤에 작성된 숫자입니다).
+
+<Tip>
+
+✏️ **직접 해보세요!** **`batched=True`**를 사용하거나 사용하지 않고 동일한 명령을 실행한 다음, 느린 토크나이저(**`AutoTokenizer.from_pretrained()`** 메서드에 **`use_fast=False`**를 추가)로 시도하여 하드웨어에서 얻는 숫자를 확인할 수 있습니다.
+
+</Tip>
+
+다음은 빠르고 느린 토크나이저로 배치 처리 여부에 따라 얻은 결과입니다:
+
+| 옵션 | 빠른 토크나이저 | 느린 토크나이저 |
+|:---|:---|:---|
+| `batched=True` | 10.8초 | 4분 41초 |
+| `batched=False` | 59.2초 | 5분 3초 |
+
+이것은 **`batched=True`** 옵션을 가진 빠른 토크나이저를 사용하는 것이 배치 처리가 없는 느린 토크나이저보다 30배 더 빠르다는 것을 의미합니다. 정말 놀랍습니다! 이것이 **`AutoTokenizer`**를 사용할 때 빠른 토크나이저가 기본값인 주된 이유입니다(그리고 "빠른"이라고 불리는 이유이기도 합니다). 토큰화 코드가 Rust에서 실행되므로 이러한 속도 향상을 달성할 수 있으며, Rust는 코드 실행을 병렬화하기 쉽게 만드는 언어입니다.
+
+병렬화는 빠른 토크나이저가 배치 처리로 거의 6배의 속도 향상을 달성하는 이유이기도 합니다. 단일 토큰화 작업을 병렬화할 수는 없지만, 많은 텍스트를 동시에 토큰화하려는 경우 실행을 여러 프로세스로 분할할 수 있으며, 각 프로세스는 자체 텍스트를 담당합니다.
+
+**`Dataset.map()`**도 자체 병렬화 기능을 가지고 있습니다. Rust를 기반으로 하지 않기 때문에 느린 토크나이저가 빠른 토크나이저를 따라잡지는 못하지만 여전히 도움이 될 수 있습니다(특히 빠른 버전이 없는 토크나이저를 사용하는 경우). 멀티프로세싱을 활성화하려면 **`num_proc`** 인수를 사용하고 **`Dataset.map()`** 호출에서 사용할 프로세스 수를 지정하십시오:
+
+```python
+slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+
+
+def slow_tokenize_function(examples):
+    return slow_tokenizer(examples["review"], truncation=True)
+
+
+tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
+```
+
+최적의 프로세스 수를 결정하기 위해 타이밍을 약간 실험해 볼 수 있습니다. 우리의 경우 8이 가장 좋은 속도 향상을 가져오는 것으로 보였습니다. 다음은 멀티프로세싱 사용 여부에 따라 얻은 숫자입니다:
+
+| 옵션 | 빠른 토크나이저 | 느린 토크나이저 |
+|:---|:---|:---|
+| `batched=True` | 10.8초 | 4분 41초 |
+| `batched=False` | 59.2초 | 5분 3초 |
+| `batched=True`, `num_proc=8` | 6.52초 | 41.3초 |
+| `batched=False`, `num_proc=8` | 9.49초 | 45.2초 |
+
+이는 느린 토크나이저에 대해 훨씬 더 합리적인 결과이지만, 빠른 토크나이저의 성능도 상당히 향상되었습니다. 그러나 이것이 항상 그런 것은 아니라는 점에 유의하십시오. **`num_proc`**의 값이 8이 아닌 경우, 우리의 테스트는 이 옵션 없이 **`batched=True`**를 사용하는 것이 더 빠르다는 것을 보여주었습니다. 일반적으로 **`batched=True`**를 사용하는 빠른 토크나이저에 대해 Python 멀티프로세싱을 사용하는 것은 권장하지 않습니다.
+
+<Tip>
+
+**`num_proc`**를 사용하여 처리 속도를 높이는 것은 일반적으로 사용하는 함수가 이미 자체 멀티프로세싱을 수행하고 있지 않은 한 훌륭한 아이디어입니다.
+
+</Tip>
+
+이 모든 기능이 단일 메서드에 압축되어 있다는 것은 이미 꽤 놀랍지만, 더 많은 것이 있습니다! **`Dataset.map()`** 및 **`batched=True`**를 사용하면 데이터셋의 요소 수를 변경할 수 있습니다. 이것은 하나의 예제에서 여러 훈련 피처를 만들려는 많은 상황에서 매우 유용하며, [챕터 7](/course/chapter7)에서 수행할 여러 NLP 작업의 전처리 과정의 일부로 이 작업을 수행해야 합니다.
+
+<Tip>
+
+💡 기계 학습에서 _예제_는 일반적으로 모델에 공급하는 _피처_ 세트로 정의됩니다. 일부 컨텍스트에서 이러한 피처는 **`Dataset`**의 열 세트가 될 것이지만, 다른 컨텍스트에서는(여기 및 질문 답변과 같은) 단일 예제에서 여러 피처를 추출하여 단일 열에 속할 수 있습니다.
+
+</Tip>
+
+작동 방식을 살펴보겠습니다! 여기서는 예제를 토큰화하고 최대 길이 128로 잘라내지만, 토크나이저에게 첫 번째 청크만 대신 텍스트의 *모든* 청크를 반환하도록 요청할 것입니다. **`return_overflowing_tokens=True`**를 사용하여 이 작업을 수행할 수 있습니다:
+
+```py
+def tokenize_and_split(examples):
+    return tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+```
+
+전체 데이터셋에서 **`Dataset.map()`**을 사용하기 전에 하나의 예제에서 이를 테스트해 봅시다:
+
+```py
+result = tokenize_and_split(drug_dataset["train"][0])
+[len(inp) for inp in result["input_ids"]]
+```
+
+```python out
+[128, 49]
+```
+
+따라서 훈련 세트의 첫 번째 예제는 우리가 지정한 최대 토큰 수보다 더 많이 토큰화되었기 때문에 두 개의 피처가 되었습니다. 첫 번째는 길이 128이고 두 번째는 길이 49입니다. 이제 데이터셋의 모든 요소에 대해 이 작업을 수행해 봅시다!
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+```
+
+```python out
+ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
+```
+
+오 안 돼! 작동하지 않았습니다! 왜 안 될까요? 오류 메시지를 보면 단서를 얻을 수 있습니다. 하나의 열 길이가 1,463이고 다른 열 길이가 1,000인 열 중 하나의 길이 불일치가 있습니다. **`Dataset.map()`** [문서](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map)를 살펴보면, 이것이 우리가 매핑하는 함수에 전달되는 샘플 수임을 상기할 수 있습니다. 여기서는 1,000개의 예제가 1,463개의 새 피처를 생성하여 모양 오류가 발생했습니다.
+
+문제는 크기가 다른 두 개의 데이터셋을 혼합하려고 한다는 것입니다. **`drug_dataset`** 열에는 특정 수의 예제(오류에서 1,000개)가 있지만, 우리가 구축하는 **`tokenized_dataset`**에는 더 많은 예제(오류 메시지에서 1,463개, **`return_overflowing_tokens=True`**를 사용하여 긴 리뷰를 하나 이상의 예제로 토큰화하고 있기 때문에 1,000개보다 많음)가 있을 것입니다. 이는 **`Dataset`**에 대해 작동하지 않으므로, 이전 데이터셋에서 열을 제거하거나 새 데이터셋에서와 동일한 크기로 만들어야 합니다. **`remove_columns`**
