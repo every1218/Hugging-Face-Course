@@ -1,0 +1,37 @@
+# 서론 (Introduction)
+
+
+[제2장](/course/chapter2)에서는 예측을 수행하기 위해 토크나이저와 사전 훈련된 모델을 사용하는 방법을 살펴보았습니다. 하지만 특정 작업을 해결하기 위해 사전 훈련된 모델을 미세 조정(fine-tune)하려면 어떻게 해야 할까요? 그것이 바로 이 장의 주제입니다! 당신은 다음을 배우게 될 것입니다:
+
+* 최신 🤗 Datasets 기능을 사용하여 Hub에서 대규모 데이터셋을 준비하는 방법
+* 현대적인 모범 사례를 적용하여 모델을 미세 조정하는 고급 **`Trainer`** API를 사용하는 방법
+* 최적화 기술을 사용하여 커스텀 훈련 루프를 구현하는 방법
+* 🤗 Accelerate 라이브러리를 활용하여 모든 설정에서 분산 훈련을 쉽게 실행하는 방법
+* 최대 성능을 위한 현재의 미세 조정 모범 사례를 적용하는 방법
+
+<Tip>
+
+📚 **필수 리소스 (Essential Resources)**: 시작하기 전에, 데이터 처리를 위해 [🤗 Datasets 문서](https://huggingface.co/docs/datasets/)를 검토해 볼 수 있습니다.
+
+</Tip>
+
+이 장은 또한 🤗 Transformers 라이브러리 외의 일부 Hugging Face 라이브러리에 대한 소개 역할도 할 것입니다! 🤗 Datasets, 🤗 Tokenizers, 🤗 Accelerate, 그리고 🤗 Evaluate와 같은 라이브러리가 모델을 더 효율적이고 효과적으로 훈련하는 데 어떻게 도움이 될 수 있는지 알아볼 것입니다.
+
+이 장의 각 주요 섹션은 다른 것을 가르쳐 줄 것입니다:
+- **섹션 2**: 최신 데이터 전처리 기술 및 효율적인 데이터셋 처리 방법 배우기
+- **섹션 3**: 모든 최신 기능을 갖춘 강력한 Trainer API 마스터하기
+- **섹션 4**: 처음부터 훈련 루프를 구현하고 Accelerate를 사용한 분산 훈련 이해하기
+
+이 장을 마칠 때쯤이면, 당신은 고급 API와 커스텀 훈련 루프를 모두 사용하여 자신의 데이터셋과 작업에 대해 모델을 미세 조정하고, 이 분야의 최신 모범 사례를 적용할 수 있게 될 것입니다.
+
+<Tip>
+
+🎯 **당신이 만들게 될 것 (What You'll Build)**: 이 장을 마칠 때쯤이면, 텍스트 분류를 위해 BERT 모델을 미세 조정하고, 자신의 데이터셋과 작업에 이러한 기술을 적용하는 방법을 이해하게 될 것입니다.
+
+</Tip>
+
+이 장은 현대 딥러닝 연구 및 프로덕션의 표준 프레임워크가 된 **PyTorch**에만 중점을 둡니다. Hugging Face 생태계의 최신 API와 모범 사례를 사용할 것입니다.
+
+훈련된 모델을 Hugging Face Hub에 업로드하려면 Hugging Face 계정이 필요합니다: [계정 생성](https://huggingface.co/join)
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter3/1.mdx" />
