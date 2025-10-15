@@ -1,0 +1,400 @@
+# 고유 데이터셋 생성하기 (Creating your own dataset)
+
+때로는 NLP 애플리케이션을 구축하는 데 필요한 데이터셋이 존재하지 않으므로, 직접 만들어야 할 수도 있습니다. 이 섹션에서는 GitHub 저장소에서 버그 또는 기능을 추적하는 데 일반적으로 사용되는 [GitHub Issues](https://github.com/features/issues/)의 코퍼스를 생성하는 방법을 보여줄 것입니다. 이 코퍼스는 다음과 같은 다양한 목적으로 사용될 수 있습니다:
+
+* 열린 이슈나 풀 리퀘스트를 닫는 데 걸리는 시간을 탐색합니다.
+* 이슈 설명(예: "버그", "개선", 또는 "질문")을 기반으로 메타데이터로 이슈에 태그를 지정할 수 있는 *다중 레이블 분류기*를 훈련합니다.
+* 사용자의 쿼리와 일치하는 이슈를 찾기 위한 **시맨틱 검색 엔진**을 만듭니다.
+
+여기서는 코퍼스를 만드는 데 중점을 두고, 다음 섹션에서는 시맨틱 검색 애플리케이션을 다룰 것입니다. 메타(meta)하게 유지하기 위해, 인기 있는 오픈 소스 프로젝트인 **🤗 Datasets**와 관련된 GitHub Issues를 사용할 것입니다! 데이터를 가져오는 방법과 이 이슈에 포함된 정보를 탐색하는 방법을 살펴보겠습니다.
+
+## 데이터 가져오기 (Getting the data)
+
+저장소의 [Issues 탭](https://github.com/huggingface/datasets/issues)으로 이동하여 🤗 Datasets의 모든 이슈를 찾을 수 있습니다. 다음 스크린샷에 표시된 것처럼, 작성 시점에 331개의 열린 이슈와 668개의 닫힌 이슈가 있었습니다.
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/datasets-issues.png" alt="The GitHub issues associated with 🤗 Datasets." width="80%"/>
+</div>
+
+이 이슈 중 하나를 클릭하면 제목, 설명 및 이슈를 특징짓는 레이블 세트가 포함되어 있음을 알 수 있습니다. 아래 스크린샷에 예가 나와 있습니다.
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/datasets-issues-single.png" alt="A typical GitHub issue in the 🤗 Datasets repository." width="80%"/>
+</div>
+
+저장소의 모든 이슈를 다운로드하려면, [GitHub REST API](https://docs.github.com/en/rest)를 사용하여 [`Issues` 엔드포인트](https://docs.github.com/en/rest/reference/issues#list-repository-issues)를 폴링할 것입니다. 이 엔드포인트는 JSON 객체 목록을 반환하며, 각 객체에는 제목 및 설명뿐만 아니라 이슈 상태 등에 대한 메타데이터를 포함하는 많은 필드가 포함되어 있습니다.
+
+이슈를 다운로드하는 편리한 방법은 Python에서 HTTP 요청을 만드는 표준 방식인 **`requests`** 라이브러리를 통하는 것입니다. 다음을 실행하여 라이브러리를 설치할 수 있습니다:
+
+```python
+!pip install requests
+```
+
+라이브러리가 설치되면 **`requests.get()`** 함수를 호출하여 **`Issues`** 엔드포인트에 GET 요청을 할 수 있습니다. 예를 들어, 다음 명령을 실행하여 첫 번째 페이지의 첫 번째 이슈를 검색할 수 있습니다:
+
+```py
+import requests
+
+url = "[https://api.github.com/repos/huggingface/datasets/issues?page=1&per_page=1](https://api.github.com/repos/huggingface/datasets/issues?page=1&per_page=1)"
+response = requests.get(url)
+```
+
+**`response`** 객체는 HTTP 상태 코드를 포함하여 요청에 대한 많은 유용한 정보를 포함합니다:
+
+```py
+response.status_code
+```
+
+```python out
+200
+```
+
+여기서 **`200`** 상태는 요청이 성공했음을 의미합니다(가능한 HTTP 상태 코드 목록은 [여기](https://en.wikipedia.org/wiki/List_of_HTTP_status_codes)에서 찾을 수 있습니다). 그러나 우리가 정말로 관심 있는 것은 바이트, 문자열 또는 JSON과 같은 다양한 형식으로 액세스할 수 있는 _페이로드_입니다. 이슈가 JSON 형식임을 알고 있으므로 페이로드를 다음과 같이 검사해 봅시다:
+
+```py
+response.json()
+```
+
+```python out
+[{'url': '[https://api.github.com/repos/huggingface/datasets/issues/2792](https://api.github.com/repos/huggingface/datasets/issues/2792)',
+  'repository_url': '[https://api.github.com/repos/huggingface/datasets](https://api.github.com/repos/huggingface/datasets)',
+  'labels_url': '[https://api.github.com/repos/huggingface/datasets/issues/2792/labels](https://api.github.com/repos/huggingface/datasets/issues/2792/labels){/name}',
+  'comments_url': '[https://api.github.com/repos/huggingface/datasets/issues/2792/comments](https://api.github.com/repos/huggingface/datasets/issues/2792/comments)',
+  'events_url': '[https://api.github.com/repos/huggingface/datasets/issues/2792/events](https://api.github.com/repos/huggingface/datasets/issues/2792/events)',
+  'html_url': '[https://github.com/huggingface/datasets/pull/2792](https://github.com/huggingface/datasets/pull/2792)',
+  'id': 968650274,
+  'node_id': 'MDExOlB1bGxSZXF1ZXN0NzEwNzUyMjc0',
+  'number': 2792,
+  'title': 'Update GooAQ',
+  'user': {'login': 'bhavitvyamalik',
+   'id': 19718818,
+   'node_id': 'MDQ6VXNlcjE5NzE4ODE4',
+   'avatar_url': '[https://avatars.githubusercontent.com/u/19718818?v=4](https://avatars.githubusercontent.com/u/19718818?v=4)',
+   'gravatar_id': '',
+   'url': '[https://api.github.com/users/bhavitvyamalik](https://api.github.com/users/bhavitvyamalik)',
+   'html_url': '[https://github.com/bhavitvyamalik](https://github.com/bhavitvyamalik)',
+   'followers_url': '[https://api.github.com/users/bhavitvyamalik/followers](https://api.github.com/users/bhavitvyamalik/followers)',
+   'following_url': '[https://api.github.com/users/bhavitvyamalik/following](https://api.github.com/users/bhavitvyamalik/following){/other_user}',
+   'gists_url': '[https://api.github.com/users/bhavitvyamalik/gists](https://api.github.com/users/bhavitvyamalik/gists){/gist_id}',
+   'starred_url': '[https://api.github.com/users/bhavitvyamalik/starred](https://api.github.com/users/bhavitvyamalik/starred){/owner}{/repo}',
+   'subscriptions_url': '[https://api.github.com/users/bhavitvyamalik/subscriptions](https://api.github.com/users/bhavitvyamalik/subscriptions)',
+   'organizations_url': '[https://api.github.com/users/bhavitvyamalik/orgs](https://api.github.com/users/bhavitvyamalik/orgs)',
+   'repos_url': '[https://api.github.com/users/bhavitvyamalik/repos](https://api.github.com/users/bhavitvyamalik/repos)',
+   'events_url': '[https://api.github.com/users/bhavitvyamalik/events](https://api.github.com/users/bhavitvyamalik/events){/privacy}',
+   'received_events_url': '[https://api.github.com/users/bhavitvyamalik/received_events](https://api.github.com/users/bhavitvyamalik/received_events)',
+   'type': 'User',
+   'site_admin': False},
+  'labels': [],
+  'state': 'open',
+  'locked': False,
+  'assignee': None,
+  'assignees': [],
+  'milestone': None,
+  'comments': 1,
+  'created_at': '2021-08-12T11:40:18Z',
+  'updated_at': '2021-08-12T12:31:17Z',
+  'closed_at': None,
+  'author_association': 'CONTRIBUTOR',
+  'active_lock_reason': None,
+  'pull_request': {'url': 'https://api.github.com/repos/huggingface/datasets/pulls/2792',
+   'html_url': 'https://github.com/huggingface/datasets/pull/2792',
+   'diff_url': 'https://github.com/huggingface/datasets/pull/2792.diff',
+   'patch_url': 'https://github.com/huggingface/datasets/pull/2792.patch'},
+  'body': '[GooAQ](https://github.com/allenai/gooaq) dataset was recently updated after splits were added for the same. This PR contains new updated GooAQ with train/val/test splits and updated README as well.',
+  'performed_via_github_app': None}]
+```
+
+와, 정보가 정말 많습니다! 이슈를 설명하는 유용한 필드인 **`title`**, **`body`**, 및 **`number`**와 이슈를 연 GitHub 사용자에 대한 정보를 볼 수 있습니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** 위에 있는 JSON 페이로드의 URL 중 몇 개를 클릭하여 각 GitHub 이슈가 어떤 유형의 정보와 연결되어 있는지 확인해 보세요.
+
+</Tip>
+
+GitHub [문서](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)에 설명된 대로, 인증되지 않은 요청은 시간당 60개 요청으로 제한됩니다. **`per_page`** 쿼리 매개변수를 늘려 수행하는 요청 수를 줄일 수 있지만, 몇천 개 이상의 이슈가 있는 저장소에서는 여전히 속도 제한에 도달할 것입니다. 따라서 대신 GitHub의 [개인 액세스 토큰 생성](https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token) 지침을 따라 **시간당 5,000개 요청**으로 속도 제한을 높일 수 있습니다. 토큰이 있으면 요청 헤더의 일부로 포함할 수 있습니다:
+
+```py
+GITHUB_TOKEN = xxx  # 여기에 GitHub 토큰 복사
+headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+```
+
+<Tip warning={true}>
+
+⚠️ **`GITHUB_TOKEN`**이 붙여넣기된 노트북을 공유하지 마십시오. 이 정보를 실수로 유출하는 것을 방지하기 위해 실행 후 마지막 셀을 삭제하는 것을 권장합니다. 더 좋은 방법은 토큰을 *.env* 파일에 저장하고 [`python-dotenv` 라이브러리](https://github.com/theskumar/python-dotenv)를 사용하여 환경 변수로 자동으로 로드하도록 하는 것입니다.
+
+</Tip>
+
+이제 액세스 토큰이 있으므로, GitHub 저장소에서 모든 이슈를 다운로드할 수 있는 함수를 만들어 봅시다:
+
+```py
+import time
+import math
+from pathlib import Path
+import pandas as pd
+from tqdm.notebook import tqdm
+
+
+def fetch_issues(
+    owner="huggingface",
+    repo="datasets",
+    num_issues=10_000,
+    rate_limit=5_000,
+    issues_path=Path("."),
+):
+    if not issues_path.is_dir():
+        issues_path.mkdir(exist_ok=True)
+
+    batch = []
+    all_issues = []
+    per_page = 100  # 페이지당 반환할 이슈 수
+    num_pages = math.ceil(num_issues / per_page)
+    base_url = "[https://api.github.com/repos](https://api.github.com/repos)"
+
+    for page in tqdm(range(num_pages)):
+        # 열린 이슈와 닫힌 이슈를 모두 가져오기 위해 state=all로 쿼리
+        query = f"issues?page={page}&per_page={per_page}&state=all"
+        issues = requests.get(f"{base_url}/{owner}/{repo}/{query}", headers=headers)
+        batch.extend(issues.json())
+
+        if len(batch) > rate_limit and len(all_issues) < num_issues:
+            all_issues.extend(batch)
+            batch = []  # 다음 기간을 위해 배치 비우기
+            print(f"Reached GitHub rate limit. Sleeping for one hour ...")
+            time.sleep(60 * 60 + 1)
+
+    all_issues.extend(batch)
+    df = pd.DataFrame.from_records(all_issues)
+    df.to_json(f"{issues_path}/{repo}-issues.jsonl", orient="records", lines=True)
+    print(
+        f"Downloaded all the issues for {repo}! Dataset stored at {issues_path}/{repo}-issues.jsonl"
+    )
+```
+
+이제 **`fetch_issues()`**를 호출하면 시간당 요청 수에 대한 GitHub의 제한을 초과하지 않도록 일괄적으로 모든 이슈를 다운로드합니다. 결과는 각 줄이 이슈를 나타내는 JSON 객체인 *repository_name-issues.jsonl* 파일에 저장됩니다. 이 함수를 사용하여 🤗 Datasets의 모든 이슈를 가져와 봅시다:
+
+```py
+# 인터넷 연결에 따라 실행하는 데 몇 분이 걸릴 수 있습니다...
+fetch_issues()
+```
+
+이슈가 다운로드되면 [섹션 2](/course/chapter5/2)에서 새로 배운 기술을 사용하여 로컬에서 로드할 수 있습니다:
+
+```py
+issues_dataset = load_dataset("json", data_files="datasets-issues.jsonl", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'timeline_url', 'performed_via_github_app'],
+    num_rows: 3019
+})
+```
+
+훌륭합니다. 처음부터 첫 번째 데이터셋을 만들었습니다! 그러나 🤗 Datasets 저장소의 [Issues 탭](https://github.com/huggingface/datasets/issues)이 총 약 1,000개의 이슈만 표시하는 데 왜 수천 개의 이슈가 있는 것일까요 🤔? GitHub [문서](https://docs.github.com/en/rest/reference/issues#list-issues-assigned-to-the-authenticated-user)에 설명된 대로, 풀 리퀘스트도 모두 다운로드했기 때문입니다:
+
+> GitHub의 REST API v3는 모든 풀 리퀘스트를 이슈로 간주하지만, 모든 이슈가 풀 리퀘스트인 것은 아닙니다. 이러한 이유로 "Issues" 엔드포인트는 응답에서 이슈와 풀 리퀘스트를 모두 반환할 수 있습니다. `pull_request` 키로 풀 리퀘스트를 식별할 수 있습니다. "Issues" 엔드포인트에서 반환된 풀 리퀘스트의 `id`는 이슈 id가 될 수 있음에 유의하십시오.
+
+이슈와 풀 리퀘스트의 내용은 상당히 다르므로, 둘을 구별할 수 있도록 약간의 전처리를 해 봅시다.
+
+## 데이터 정리 (Cleaning up the data)
+
+GitHub 문서의 위 스니펫은 `pull_request` 열을 사용하여 이슈와 풀 리퀘스트를 구분할 수 있음을 알려줍니다. 차이점이 무엇인지 확인하기 위해 무작위 샘플을 살펴봅시다. [섹션 3](/course/chapter5/3)에서 했던 것처럼, **`Dataset.shuffle()`**과 **`Dataset.select()`**를 연결하여 무작위 샘플을 만들고 **`html_url`** 및 **`pull_request`** 열을 압축하여 다양한 URL을 비교할 수 있습니다:
+
+```py
+sample = issues_dataset.shuffle(seed=666).select(range(3))
+
+# URL 및 풀 리퀘스트 항목 출력
+for url, pr in zip(sample["html_url"], sample["pull_request"]):
+    print(f">> URL: {url}")
+    print(f">> Pull request: {pr}\n")
+```
+
+```python out
+>> URL: [https://github.com/huggingface/datasets/pull/850](https://github.com/huggingface/datasets/pull/850)
+>> Pull request: {'url': '[https://api.github.com/repos/huggingface/datasets/pulls/850](https://api.github.com/repos/huggingface/datasets/pulls/850)', 'html_url': '[https://github.com/huggingface/datasets/pull/850](https://github.com/huggingface/datasets/pull/850)', 'diff_url': '[https://github.com/huggingface/datasets/pull/850.diff](https://github.com/huggingface/datasets/pull/850.diff)', 'patch_url': '[https://github.com/huggingface/datasets/pull/850.patch](https://github.com/huggingface/datasets/pull/850.patch)'}
+
+>> URL: [https://github.com/huggingface/datasets/issues/2773](https://github.com/huggingface/datasets/issues/2773)
+>> Pull request: None
+
+>> URL: [https://github.com/huggingface/datasets/pull/783](https://github.com/huggingface/datasets/pull/783)
+>> Pull request: {'url': '[https://api.github.com/repos/huggingface/datasets/pulls/783](https://api.github.com/repos/huggingface/datasets/pulls/783)', 'html_url': '[https://github.com/huggingface/datasets/pull/783](https://github.com/huggingface/datasets/pull/783)', 'diff_url': '[https://github.com/huggingface/datasets/pull/783.diff](https://github.com/huggingface/datasets/pull/783.diff)', 'patch_url': '[https://github.com/huggingface/datasets/pull/783.patch](https://github.com/huggingface/datasets/pull/783.patch)'}
+```
+
+여기서 각 풀 리퀘스트는 다양한 URL과 연결되어 있는 반면, 일반 이슈에는 **`None`** 항목이 있음을 알 수 있습니다. 이 구별을 사용하여 **`pull_request`** 필드가 **`None`**인지 여부를 확인하는 새 **`is_pull_request`** 열을 만들 수 있습니다:
+
+```py
+issues_dataset = issues_dataset.map(
+    lambda x: {"is_pull_request": False if x["pull_request"] is None else True}
+)
+```
+
+<Tip>
+
+✏️ **직접 해보세요!** 🤗 Datasets에서 이슈를 닫는 데 걸리는 평균 시간을 계산하십시오. 풀 리퀘스트와 열린 이슈를 필터링하는 데 **`Dataset.filter()`** 함수가 유용하며, **`Dataset.set_format()`** 함수를 사용하여 데이터셋을 **`DataFrame`**으로 변환하여 **`created_at`** 및 **`closed_at`** 타임스탬프를 쉽게 조작할 수 있습니다. 추가 점수를 위해 풀 리퀘스트를 닫는 데 걸리는 평균 시간을 계산하십시오.
+
+</Tip>
+
+일부 열을 삭제하거나 이름을 변경하여 데이터셋을 더 정리할 수도 있지만, 이 단계에서는 데이터셋을 가능한 한 "원시" 상태로 유지하여 여러 애플리케이션에서 쉽게 사용할 수 있도록 하는 것이 일반적인 좋은 관행입니다.
+
+데이터셋을 Hugging Face Hub에 푸시하기 전에, 누락된 한 가지, 즉 각 이슈 및 풀 리퀘스트와 관련된 **댓글**을 처리해 봅시다. GitHub REST API를 사용하여 다음으로 추가할 것입니다!
+
+## 데이터 증강 (Augmenting the dataset)
+
+다음 스크린샷에 표시된 것처럼, 이슈 또는 풀 리퀘스트와 관련된 댓글은 특히 라이브러리에 대한 사용자 쿼리에 응답하기 위한 검색 엔진을 구축하는 데 관심이 있는 경우 풍부한 정보 소스를 제공합니다.
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/datasets-issues-comment.png" alt="Comments associated with an issue about 🤗 Datasets." width="80%"/>
+</div>
+
+GitHub REST API는 이슈 번호와 연결된 모든 댓글을 반환하는 [`Comments` 엔드포인트](https://docs.github.com/en/rest/reference/issues#list-issue-comments)를 제공합니다. 엔드포인트가 무엇을 반환하는지 테스트해 봅시다:
+
+```py
+issue_number = 2792
+url = f"[https://api.github.com/repos/huggingface/datasets/issues/](https://api.github.com/repos/huggingface/datasets/issues/){issue_number}/comments"
+response = requests.get(url, headers=headers)
+response.json()
+```
+
+```python out
+[{'url': '[https://api.github.com/repos/huggingface/datasets/issues/comments/897594128](https://api.github.com/repos/huggingface/datasets/issues/comments/897594128)',
+  'html_url': '[https://github.com/huggingface/datasets/pull/2792#issuecomment-897594128](https://github.com/huggingface/datasets/pull/2792#issuecomment-897594128)',
+  'issue_url': '[https://api.github.com/repos/huggingface/datasets/issues/2792](https://api.github.com/repos/huggingface/datasets/issues/2792)',
+  'id': 897594128,
+  'node_id': 'IC_kwDODunzps41gDMQ',
+  'user': {'login': 'bhavitvyamalik',
+   'id': 19718818,
+   'node_id': 'MDQ6VXNlcjE5NzE4ODE4',
+   'avatar_url': '[https://avatars.githubusercontent.com/u/19718818?v=4](https://avatars.githubusercontent.com/u/19718818?v=4)',
+   'gravatar_id': '',
+   'url': '[https://api.github.com/users/bhavitvyamalik](https://api.github.com/users/bhavitvyamalik)',
+   'html_url': '[https://github.com/bhavitvyamalik](https://github.com/bhavitvyamalik)',
+   'followers_url': '[https://api.github.com/users/bhavitvyamalik/followers](https://api.github.com/users/bhavitvyamalik/followers)',
+   'following_url': '[https://api.github.com/users/bhavitvyamalik/following](https://api.github.com/users/bhavitvyamalik/following){/other_user}',
+   'gists_url': '[https://api.github.com/users/bhavitvyamalik/gists](https://api.github.com/users/bhavitvyamalik/gists){/gist_id}',
+   'starred_url': '[https://api.github.com/users/bhavitvyamalik/starred](https://api.github.com/users/bhavitvyamalik/starred){/owner}{/repo}',
+   'subscriptions_url': '[https://api.github.com/users/bhavitvyamalik/subscriptions](https://api.github.com/users/bhavitvyamalik/subscriptions)',
+   'organizations_url': '[https://api.github.com/users/bhavitvyamalik/orgs](https://api.github.com/users/bhavitvyamalik/orgs)',
+   'repos_url': '[https://api.github.com/users/bhavitvyamalik/repos](https://api.github.com/users/bhavitvyamalik/repos)',
+   'events_url': '[https://api.github.com/users/bhavitvyamalik/events](https://api.github.com/users/bhavitvyamalik/events){/privacy}',
+   'received_events_url': '[https://api.github.com/users/bhavitvyamalik/received_events](https://api.github.com/users/bhavitvyamalik/received_events)',
+   'type': 'User',
+   'site_admin': False},
+  'created_at': '2021-08-12T12:21:52Z',
+  'updated_at': '2021-08-12T12:31:17Z',
+  'author_association': 'CONTRIBUTOR',
+  'body': "@albertvillanova my tests are failing here:\r\n```\r\ndataset_name = 'gooaq'\r\n\r\n    def test_load_dataset(self, dataset_name):\r\n        configs = self.dataset_tester.load_all_configs(dataset_name, is_local=True)[:1]\r\n>       self.dataset_tester.check_load_dataset(dataset_name, configs, is_local=True, use_local_dummy_data=True)\r\n\r\ntests/test_dataset_common.py:234: \r\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \r\ntests/test_dataset_common.py:187: in check_load_dataset\r\n    self.parent.assertTrue(len(dataset[split]) > 0)\r\nE   AssertionError: False is not true\r\n```\r\nWhen I try loading dataset on local machine it works fine. Any suggestions on how can I avoid this error?",
+  'performed_via_github_app': None}]
+```
+
+댓글은 **`body`** 필드에 저장되어 있음을 알 수 있으므로, **`response.json()`**의 각 요소에 대한 **`body`** 내용을 선택하여 이슈와 연결된 모든 댓글을 반환하는 간단한 함수를 작성해 봅시다:
+
+```py
+def get_comments(issue_number):
+    url = f"[https://api.github.com/repos/huggingface/datasets/issues/](https://api.github.com/repos/huggingface/datasets/issues/){issue_number}/comments"
+    response = requests.get(url, headers=headers)
+    return [r["body"] for r in response.json()]
+
+
+# 함수가 예상대로 작동하는지 테스트
+get_comments(2792)
+```
+
+```python out
+["@albertvillanova my tests are failing here:\r\n```\r\ndataset_name = 'gooaq'\r\n\r\n    def test_load_dataset(self, dataset_name):\r\n        configs = self.dataset_tester.load_all_configs(dataset_name, is_local=True)[:1]\r\n>       self.dataset_tester.check_load_dataset(dataset_name, configs, is_local=True, use_local_dummy_data=True)\r\n\r\ntests/test_dataset_common.py:234: \r\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \r\ntests/test_dataset_common.py:187: in check_load_dataset\r\n    self.parent.assertTrue(len(dataset[split]) > 0)\r\nE   AssertionError: False is not true\r\n```\r\nWhen I try loading dataset on local machine it works fine. Any suggestions on how can I avoid this error?"]
+```
+
+이것은 좋아 보입니다. 이제 **`Dataset.map()`**을 사용하여 데이터셋의 각 이슈에 새 **`comments`** 열을 추가해 봅시다:
+
+```py
+# 인터넷 연결에 따라 몇 분이 걸릴 수 있습니다...
+issues_with_comments_dataset = issues_dataset.map(
+    lambda x: {"comments": get_comments(x["number"])}
+)
+```
+
+마지막 단계는 데이터셋을 Hub에 푸시하는 것입니다. 이 작업을 수행하는 방법을 살펴봅시다.
+
+## Hugging Face Hub에 데이터셋 업로드하기 (Uploading the dataset to the Hugging Face Hub)
+
+<Youtube id="HaN6qCr_Afc"/>
+
+이제 증강된 데이터셋이 있으므로, 커뮤니티와 공유하기 위해 Hub에 푸시할 차례입니다! 데이터셋 업로드는 매우 간단합니다. 🤗 Transformers의 모델 및 토크나이저와 마찬가지로, **`push_to_hub()`** 메서드를 사용하여 데이터셋을 푸시할 수 있습니다. 이를 수행하려면 Hugging Face Hub에 **`notebook_login()`** 함수로 먼저 로그인하여 얻을 수 있는 인증 토큰이 필요합니다:
+
+```py
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+이렇게 하면 사용자 이름과 암호를 입력할 수 있는 위젯이 생성되고, API 토큰은 *~/.huggingface/token*에 저장됩니다. 터미널에서 코드를 실행하는 경우, 대신 CLI를 통해 로그인할 수 있습니다:
+
+```bash
+huggingface-cli login
+```
+
+이 작업을 수행했으면 다음을 실행하여 데이터셋을 업로드할 수 있습니다:
+
+```py
+issues_with_comments_dataset.push_to_hub("github-issues")
+```
+
+여기서부터 누구나 **`load_dataset()`**에 저장소 ID를 **`path`** 인수로 제공하여 데이터셋을 다운로드할 수 있습니다:
+
+```py
+remote_dataset = load_dataset("lewtun/github-issues", split="train")
+remote_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+멋집니다. 데이터셋을 Hub에 푸시했고 다른 사람들이 사용할 수 있습니다! 이제 남은 중요한 한 가지는 코퍼스가 어떻게 생성되었는지 설명하고 커뮤니티에 유용한 기타 정보를 제공하는 *데이터셋 카드*를 추가하는 것입니다.
+
+<Tip>
+
+💡 **`huggingface-cli`**와 약간의 Git 마법을 사용하여 터미널에서 Hugging Face Hub에 데이터셋을 직접 업로드할 수도 있습니다. 이에 대한 자세한 내용은 [🤗 Datasets 가이드](https://huggingface.co/docs/datasets/share#share-a-dataset-using-the-cli)를 참조하십시오.
+
+</Tip>
+
+## 데이터셋 카드 생성하기 (Creating a dataset card)
+
+잘 문서화된 데이터셋은 사용자가 데이터셋이 자신의 작업과 관련이 있는지 여부를 결정하고 데이터셋 사용과 관련된 잠재적 편향 또는 위험을 평가할 수 있는 컨텍스트를 제공하므로, 다른 사람들에게(미래의 당신을 포함하여!) 유용할 가능성이 더 높습니다.
+
+Hugging Face Hub에서 이 정보는 각 데이터셋 저장소의 *README.md* 파일에 저장됩니다. 이 파일을 만들기 전에 수행해야 하는 두 가지 주요 단계가 있습니다:
+
+1. [`datasets-tagging` 애플리케이션](https://huggingface.co/datasets/tagging/)을 사용하여 YAML 형식의 메타데이터 태그를 만듭니다. 이 태그는 Hugging Face Hub의 다양한 검색 기능에 사용되며 커뮤니티 구성원이 데이터셋을 쉽게 찾을 수 있도록 보장합니다. 여기서 사용자 정의 데이터셋을 만들었으므로 **`datasets-tagging`** 저장소를 복제하고 애플리케이션을 로컬에서 실행해야 합니다. 인터페이스는 다음과 같습니다:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/datasets-tagger.png" alt="The 'datasets-tagging' interface." width="80%"/>
+</div>
+
+2. 정보가 풍부한 데이터셋 카드를 만드는 방법에 대한 [🤗 Datasets 가이드](https://github.com/huggingface/datasets/blob/master/templates/README_guide.md)를 읽고 이를 템플릿으로 사용하십시오.
+
+Hub에서 직접 *README.md* 파일을 만들 수 있으며, **`lewtun/github-issues`** 데이터셋 저장소에서 템플릿 데이터셋 카드를 찾을 수 있습니다. 채워진 데이터셋 카드의 스크린샷은 아래에 나와 있습니다.
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/dataset-card.png" alt="A dataset card." width="80%"/>
+</div>
+
+<Tip>
+
+✏️ **직접 해보세요!** **`dataset-tagging`** 애플리케이션과 [🤗 Datasets 가이드](https://github.com/huggingface/datasets/blob/master/templates/README_guide.md)를 사용하여 GitHub 이슈 데이터셋의 *README.md* 파일을 완성하십시오.
+
+</Tip>
+
+이것이 전부입니다! 이 섹션에서 좋은 데이터셋을 만드는 것이 매우 복잡할 수 있지만, 다행히 업로드하고 커뮤니티와 공유하는 것은 그렇지 않다는 것을 알았습니다. 다음 섹션에서는 새 데이터셋을 사용하여 질문을 가장 관련성이 높은 이슈 및 댓글과 일치시킬 수 있는 🤗 Datasets의 시맨틱 검색 엔진을 만드는 방법을 사용할 것입니다.
+
+<Tip>
+
+✏️ **직접 해보세요!** 이 섹션에서 수행한 단계를 따라 즐겨 사용하는 오픈 소스 라이브러리(물론 🤗 Datasets가 아닌 다른 것을 선택하십시오!)에 대한 GitHub 이슈 데이터셋을 만드십시오. 추가 점수를 위해 **`labels`** 필드에 있는 태그를 예측하도록 다중 레이블 분류기를 미세 조정하십시오.
+
+</Tip>
+
+
+<EditOnGithub source="https://github.com/huggingface/course/blob/main/chapters/en/chapter5/5.mdx" />
